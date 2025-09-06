@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
-import './App.css'
 
 // Símbolos do jogo com valores otimizados para engajamento
 const symbols = [
