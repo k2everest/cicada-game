@@ -1,0 +1,47 @@
+name: Prompt Runner
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  run-prompt:
+    if: contains(github.event.head_commit.message, 'prompt:')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Extrair prompt do commit
+        id: get-prompt
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p')
+          echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
+
+      - name: Rodar ChatGPT (OpenAI API)
+        id: ai
+        run: |
+          RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
+            -d "{
+              \"model\": \"gpt-4o-mini\",
+              \"messages\": [{\"role\": \"user\", \"content\": \"${{ steps.get-prompt.outputs.prompt }}\"}]
+            }" | jq -r '.choices[0].message.content')
+
+          echo "response=$RESPONSE" >> $GITHUB_OUTPUT
+
+      - name: Salvar resposta em arquivo
+        run: |
+          echo "${{ steps.ai.outputs.response }}" > AI_RESPONSE.md
+
+      - name: Commit automático
+        run: |
+          git config --global user.name "prompt-bot"
+          git config --global user.email "bot@example.com"
+          git add AI_RESPONSE.md
+          git commit -m "AI response for prompt"
+          git push
