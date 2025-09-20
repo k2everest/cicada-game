@@ -29,8 +29,9 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
             -d "{
               \"model\": \"gpt-4o-mini\",
+              \"response_format\": {\"type\": \"json_object\"},
               \"messages\": [
-                {\"role\": \"system\", \"content\": \"Você é um assistente que edita código. Sempre responda apenas com o conteúdo final dos arquivos que devem ser modificados, no formato JSON: [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}]\"},
+                {\"role\": \"system\", \"content\": \"Você é um assistente que edita código. Responda **somente** com um JSON válido no formato: [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}]\"},
                 {\"role\": \"user\", \"content\": \"${{ steps.get-prompt.outputs.prompt }}\"}
               ]
             }" | jq -r '.choices[0].message.content')
@@ -38,11 +39,16 @@ jobs:
           echo "$RESPONSE" > changes.json
           cat changes.json
 
+      - name: Validar JSON
+        run: |
+          cat changes.json | jq empty
+
       - name: Aplicar mudanças nos arquivos
         run: |
           cat changes.json | jq -c '.[]' | while read i; do
             FILE=$(echo $i | jq -r '.path')
             CONTENT=$(echo $i | jq -r '.content')
+            mkdir -p $(dirname "$FILE")
             echo "$CONTENT" > "$FILE"
           done
 
