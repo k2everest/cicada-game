@@ -29,19 +29,27 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
             -d "{
               \"model\": \"gpt-4o-mini\",
-              \"messages\": [{\"role\": \"user\", \"content\": \"${{ steps.get-prompt.outputs.prompt }}\"}]
+              \"messages\": [
+                {\"role\": \"system\", \"content\": \"Você é um assistente que edita código. Sempre responda apenas com o conteúdo final dos arquivos que devem ser modificados, no formato JSON: [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}]\"},
+                {\"role\": \"user\", \"content\": \"${{ steps.get-prompt.outputs.prompt }}\"}
+              ]
             }" | jq -r '.choices[0].message.content')
 
-          echo "response=$RESPONSE" >> $GITHUB_OUTPUT
+          echo "$RESPONSE" > changes.json
+          cat changes.json
 
-      - name: Salvar resposta em arquivo
+      - name: Aplicar mudanças nos arquivos
         run: |
-          echo "${{ steps.ai.outputs.response }}" > AI_RESPONSE.md
+          cat changes.json | jq -c '.[]' | while read i; do
+            FILE=$(echo $i | jq -r '.path')
+            CONTENT=$(echo $i | jq -r '.content')
+            echo "$CONTENT" > "$FILE"
+          done
 
       - name: Commit automático
         run: |
           git config --global user.name "prompt-bot"
           git config --global user.email "bot@example.com"
-          git add AI_RESPONSE.md
-          git commit -m "AI response for prompt"
+          git add .
+          git commit -m "AI applied changes for prompt"
           git push
