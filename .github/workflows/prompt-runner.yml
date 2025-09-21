@@ -21,37 +21,31 @@ jobs:
           PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p')
           echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
 
-      - name: Preparar contexto do código
-        id: get-context
-        run: |
-          CONTEXT=$(find . -type f \
-            -not -path "./.git/*" \
-            -not -path "./node_modules/*" \
-            \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
-            -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \;)
-          
-          CONTEXT=$(echo "$CONTEXT" | head -c 100000)
-          echo "context<<EOF" >> $GITHUB_OUTPUT
-          echo "$CONTEXT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+      - name: Download contexto do repo
+        uses: actions/download-artifact@v3
+        with:
+          name: repo-context
+          path: .
 
       - name: Rodar ChatGPT (OpenAI API)
         id: ai
         run: |
-          RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
+          CONTEXT=$(head -c 100000 full_context.txt)
+
+          RESPONSE=$(cat <<EOF | curl -s https://api.openai.com/v1/chat/completions \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
-            -d @- <<'EOF'
+            -d @-
 {
   "model": "gpt-4o-mini",
   "messages": [
     {
       "role": "system",
-      "content": "Você é um assistente que edita código. Responda **somente** com um JSON válido no formato: [{\"path\":\"arquivo.ext\",\"content\":\"novo conteúdo\"}]"
+      "content": "Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato: [{\"path\":\"arquivo.ext\",\"content\":\"novo conteúdo\"}]."
     },
     {
       "role": "user",
-      "content": "Contexto do repositório:\n${{ steps.get-context.outputs.context }}"
+      "content": "Contexto do repositório:\n$CONTEXT"
     },
     {
       "role": "user",
@@ -62,13 +56,11 @@ jobs:
 }
 EOF
           )
-
           echo "$RESPONSE" > changes.json
           cat changes.json
 
       - name: Validar JSON
-        run: |
-          cat changes.json | jq empty
+        run: cat changes.json | jq empty
 
       - name: Aplicar mudanças nos arquivos
         run: |
