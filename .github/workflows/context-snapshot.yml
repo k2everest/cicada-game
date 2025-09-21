@@ -1,0 +1,31 @@
+name: Repo Context Snapshot
+
+on:
+  workflow_dispatch: # dispara manualmente
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/context-snapshot.yml"
+
+jobs:
+  analyze-repo:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Gerar contexto completo
+        run: |
+          find . -type f \
+            -not -path "./.git/*" \
+            -not -path "./node_modules/*" \
+            \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
+            -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \; > full_context.txt
+
+      - name: Upload contexto (artifact)
+        uses: actions/upload-artifact@v3
+        with:
+          name: repo-context
+          path: full_context.txt
