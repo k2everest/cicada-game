@@ -30,11 +30,11 @@ jobs:
         id: get-context
         run: |
           if [ ! -f .context_initialized.flag ]; then
-            CONTEXT=$(find . -type f \
+            find . -type f \
               -not -path "./.git/*" \
               -not -path "./node_modules/*" \
               \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
-              -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \; | head -c 100000)
+              -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \; > full_context.txt
             touch .context_initialized.flag
             git add .context_initialized.flag
             git commit -m "Initialize context snapshot" || echo "Flag já existe"
@@ -49,11 +49,10 @@ jobs:
                 CONTEXT+="\n"
               fi
             done
-            CONTEXT=$(echo -e "$CONTEXT" | head -c 100000)
+            echo -e "$CONTEXT" > full_context.txt
           fi
-          # Escapa para GitHub output
           echo "context<<EOF" >> $GITHUB_OUTPUT
-          echo -e "$CONTEXT" >> $GITHUB_OUTPUT
+          cat full_context.txt >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Rodar ChatGPT (OpenAI API)
@@ -61,7 +60,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          CONTEXT_ESCAPED=$(jq -Rs . <<< "${{ steps.get-context.outputs.context }}")
+          CONTEXT_ESCAPED=$(jq -Rs . < full_context.txt)
           PROMPT_ESCAPED=$(jq -Rs . <<< "${{ steps.get-prompt.outputs.prompt }}")
 
           JSON_PAYLOAD=$(jq -n \
