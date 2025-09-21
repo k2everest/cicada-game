@@ -30,7 +30,7 @@ jobs:
             \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
             -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \;)
           
-          CONTEXT=$(echo "$CONTEXT" | head -c 100000) # até ~100k chars
+          CONTEXT=$(echo "$CONTEXT" | head -c 100000)
           echo "context<<EOF" >> $GITHUB_OUTPUT
           echo "$CONTEXT" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -41,14 +41,27 @@ jobs:
           RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
-            -d "{
-              \"model\": \"gpt-4o-mini\",
-              \"messages\": [
-                {\"role\": \"system\", \"content\": \"Você é um assistente que edita código. Responda **somente** com um JSON válido no formato: [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}]\"},
-                {\"role\": \"user\", \"content\": \"Contexto do repositório:\n${{ steps.get-context.outputs.context }}\"},
-                {\"role\": \"user\", \"content\": \"${{ steps.get-prompt.outputs.prompt }}\"}
-              ]
-            }" | jq -r '.choices[0].message.content')
+            -d @- <<'EOF'
+{
+  "model": "gpt-4o-mini",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Você é um assistente que edita código. Responda **somente** com um JSON válido no formato: [{\"path\":\"arquivo.ext\",\"content\":\"novo conteúdo\"}]"
+    },
+    {
+      "role": "user",
+      "content": "Contexto do repositório:\n${{ steps.get-context.outputs.context }}"
+    },
+    {
+      "role": "user",
+      "content": "${{ steps.get-prompt.outputs.prompt }}"
+    }
+  ],
+  "response_format": { "type": "json_object" }
+}
+EOF
+          )
 
           echo "$RESPONSE" > changes.json
           cat changes.json
