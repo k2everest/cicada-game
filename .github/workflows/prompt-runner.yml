@@ -11,10 +11,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Preparar contexto do código
+      - name: Extrair prompt do commit
+        id: get-prompt
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p')
+          echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
+
+      - name: Preparar contexto
         id: get-context
         run: |
           if [ ! -f .context_initialized.flag ]; then
@@ -22,13 +29,8 @@ jobs:
               -not -path "./.git/*" \
               -not -path "./node_modules/*" \
               \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
-              -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \; | tr -d '\0' > full_context.txt
+              -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \; > full_context.txt
             touch .context_initialized.flag
-            git config --global user.name "prompt-bot"
-            git config --global user.email "bot@example.com"
-            git add .context_initialized.flag
-            git commit -m "Initialize context snapshot" || echo "Flag já existe"
-            git push
           else
             if git rev-parse HEAD~1 >/dev/null 2>&1; then
               FILES=$(git diff --name-only HEAD~1 HEAD)
@@ -39,22 +41,13 @@ jobs:
             for F in $FILES; do
               if [[ -f "$F" ]]; then
                 CONTEXT+="==== $F ====\n"
-                CONTEXT+=$(cat "$F" | tr -d '\0')
+                CONTEXT+=$(cat "$F")
                 CONTEXT+="\n"
               fi
             done
             echo -e "$CONTEXT" > full_context.txt
           fi
-
-          CONTEXT_ESCAPED=$(jq -Rs . < full_context.txt)
-          echo "context=$CONTEXT_ESCAPED" >> $GITHUB_OUTPUT
-
-      - name: Extrair prompt do commit
-        id: get-prompt
-        run: |
-          COMMIT_MSG="${{ github.event.head_commit.message }}"
-          PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p')
-          echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
+          echo "context=$(jq -Rs . < full_context.txt)" >> $GITHUB_OUTPUT
 
       - name: Rodar ChatGPT (OpenAI API)
         id: ai
@@ -65,8 +58,8 @@ jobs:
             -d "{
               \"model\": \"gpt-4o-mini\",
               \"messages\": [
-                {\"role\": \"system\", \"content\": \"Você é um assistente que edita código. Responda **SOMENTE** com JSON válido no formato: [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}]\"},
-                {\"role\": \"user\", \"content\": \"Contexto do repositório:\n${{ steps.get-context.outputs.context }}\"},
+                {\"role\": \"system\", \"content\": \"Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato: [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}]\"},
+                {\"role\": \"user\", \"content\": ${{ steps.get-context.outputs.context}}},
                 {\"role\": \"user\", \"content\": \"${{ steps.get-prompt.outputs.prompt }}\"}
               ]
             }")
