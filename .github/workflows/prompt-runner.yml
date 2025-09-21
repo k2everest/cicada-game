@@ -1,4 +1,4 @@
-name: Prompt Runner
+name: Prompt Runner with Context
 
 on:
   push:
@@ -21,7 +21,16 @@ jobs:
           PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p')
           echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
 
-      - name: Rodar ChatGPT (OpenAI API)
+      - name: Preparar contexto do código
+        id: get-context
+        run: |
+          # Lista todos os arquivos relevantes do projeto (excluindo .git)
+          CONTEXT=$(find . -type f -not -path "./.git/*" -exec echo "==== {} ====" \; -exec cat {} \;)
+          # Limitar tamanho do contexto para não estourar a API (ex: 20.000 chars)
+          CONTEXT=$(echo "$CONTEXT" | head -c 20000)
+          echo "context=$CONTEXT" >> $GITHUB_OUTPUT
+
+      - name: Rodar GPT com contexto do projeto
         id: ai
         run: |
           RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
@@ -30,17 +39,12 @@ jobs:
             -d "{
               \"model\": \"gpt-4o-mini\",
               \"messages\": [
-                {\"role\": \"system\", \"content\": \"Você é um assistente que edita código. Responda estritamente com um JSON válido no formato: [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}] sem explicações, sem markdown, sem texto extra.\"},
-                {\"role\": \"user\", \"content\": \"${{ steps.get-prompt.outputs.prompt }}\"}
+                {\"role\": \"system\", \"content\": \"Você é um assistente que edita código. Analise o contexto do projeto e aplique mudanças somente conforme o prompt. Responda estritamente com JSON no formato [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}]. Não explique nada.\"},
+                {\"role\": \"user\", \"content\": \"CONTEXTO DO PROJETO:\n${{ steps.get-context.outputs.context }}\n\nPROMPT DO USUÁRIO:\n${{ steps.get-prompt.outputs.prompt }}\"}
               ]
             }" | jq -r '.choices[0].message.content')
 
-          if [ -z "$RESPONSE" ] || [ "$RESPONSE" = "null" ]; then
-            echo "[]" > changes.json
-          else
-            echo "$RESPONSE" > changes.json
-          fi
-
+          echo "$RESPONSE" > changes.json
           echo "Resposta do modelo:"
           cat changes.json
 
