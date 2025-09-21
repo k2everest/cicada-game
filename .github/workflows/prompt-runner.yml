@@ -19,15 +19,14 @@ jobs:
         run: |
           set -e
           CONTEXT=""
-          # Corrigido: parênteses no find para agrupar OR
+          # Corrigido: find inteiro dentro de aspas para YAML não quebrar
           find . -type f -not -path "./.git/*" -not -path "./node_modules/*" \
-            \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
+            "(" -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" ")" \
             -print0 | while IFS= read -r -d '' file; do
               CONTEXT="$CONTEXT==== $file ====
 $(cat "$file")
 "
           done
-          # Limita contexto a 50k caracteres
           CONTEXT=$(echo "$CONTEXT" | head -c 50000)
           echo "context<<EOF" >> $GITHUB_OUTPUT
           echo "$CONTEXT" >> $GITHUB_OUTPUT
