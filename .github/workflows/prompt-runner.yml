@@ -21,15 +21,18 @@ jobs:
           PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p')
           echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
 
+      - name: Baixar contexto salvo
+        uses: actions/download-artifact@v3
+        with:
+          name: repo-context
+          path: .
+
       - name: Rodar ChatGPT (OpenAI API)
         id: ai
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          CONTEXT=$(find . -type f \
-            -not -path "./.git/*" \
-            -not -path "./node_modules/*" \
-            -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \; | head -c 100000)
+          CONTEXT=$(head -c 100000 full_context.txt)
 
           JSON_PAYLOAD=$(jq -n \
             --arg context "$CONTEXT" \
@@ -70,4 +73,4 @@ jobs:
           git config --global user.email "bot@example.com"
           git add .
           git commit -m "AI applied changes for prompt" || echo "Nada para commitar"
-          gi
+          git push
