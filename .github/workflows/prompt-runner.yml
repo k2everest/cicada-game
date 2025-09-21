@@ -1,35 +1,108 @@
-Run if [ ! -f .context_initialized.flag ]; then
-  if [ ! -f .context_initialized.flag ]; then
-    find . -type f \
-      -not -path "./.git/*" \
-      -not -path "./node_modules/*" \
-      \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
-      -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \; > full_context.txt
-    touch .context_initialized.flag
-    git add .context_initialized.flag
-    git commit -m "Initialize context snapshot" || echo "Flag já existe"
-    git push
-  else
-    FILES=$(git diff --name-only HEAD~1 HEAD)
-    CONTEXT=""
-    for F in $FILES; do
-      if [[ -f "$F" ]]; then
-        CONTEXT+="==== $F ====\n"
-        CONTEXT+=$(cat "$F")
-        CONTEXT+="\n"
-      fi
-    done
-    echo -e "$CONTEXT" > full_context.txt
-  fi
-  echo "context<<EOF" >> $GITHUB_OUTPUT
-  cat full_context.txt >> $GITHUB_OUTPUT
-  echo "EOF" >> $GITHUB_OUTPUT
-  shell: /usr/bin/bash -e {0}
-fatal: ambiguous argument 'HEAD~1': unknown revision or path not in the working tree.
-Use '--' to separate paths from revisions, like this:
-'git <command> [<revision>...] -- [<file>...]'
-Error: Process completed with exit code 128.
-0s
-0s
-0s
-0s
+name: Prompt Runner
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  run-prompt:
+    if: contains(github.event.head_commit.message, 'prompt:')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Configurar git
+        run: |
+          git config --global user.name "prompt-bot"
+          git config --global user.email "bot@example.com"
+
+      - name: Extrair prompt do commit
+        id: get-prompt
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p')
+          echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
+
+      - name: Preparar contexto
+        id: get-context
+        run: |
+          if [ ! -f .context_initialized.flag ]; then
+            find . -type f \
+              -not -path "./.git/*" \
+              -not -path "./node_modules/*" \
+              \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
+              -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \; > full_context.txt
+            touch .context_initialized.flag
+            git add .context_initialized.flag
+            git commit -m "Initialize context snapshot" || echo "Flag já existe"
+            git push
+          else
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              FILES=$(git diff --name-only HEAD~1 HEAD)
+            else
+              FILES=$(git ls-files)
+            fi
+
+            CONTEXT=""
+            for F in $FILES; do
+              if [[ -f "$F" ]]; then
+                CONTEXT+="==== $F ====\n"
+                CONTEXT+=$(cat "$F")
+                CONTEXT+="\n"
+              fi
+            done
+            echo -e "$CONTEXT" > full_context.txt
+          fi
+          echo "context<<EOF" >> $GITHUB_OUTPUT
+          cat full_context.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Rodar ChatGPT (OpenAI API)
+        id: ai
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          CONTEXT_ESCAPED=$(jq -Rs . < full_context.txt)
+          PROMPT_ESCAPED=$(jq -Rs . <<< "${{ steps.get-prompt.outputs.prompt }}")
+
+          JSON_PAYLOAD=$(jq -n \
+            --arg context "$CONTEXT_ESCAPED" \
+            --arg prompt "$PROMPT_ESCAPED" \
+            '{
+              model: "gpt-4o-mini",
+              response_format: {type: "json_object"},
+              messages: [
+                {role: "system", content: "Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato: [{\"path\":\"arquivo.ext\",\"content\":\"novo conteúdo\"}]"},
+                {role: "user", content: "Contexto do repositório:\n\($context)"},
+                {role: "user", content: $prompt}
+              ]
+            }')
+
+          RESPONSE=$(echo "$JSON_PAYLOAD" | curl -s https://api.openai.com/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -d @- | jq -r '.choices[0].message.content')
+
+          echo "$RESPONSE" > changes.json
+          cat changes.json
+
+      - name: Validar JSON
+        run: cat changes.json | jq empty
+
+      - name: Aplicar mudanças nos arquivos
+        run: |
+          cat changes.json | jq -c '.[]' | while read i; do
+            FILE=$(echo $i | jq -r '.path')
+            CONTENT=$(echo $i | jq -r '.content')
+            mkdir -p $(dirname "$FILE")
+            echo "$CONTENT" > "$FILE"
+          done
+
+      - name: Commit automático
+        run: |
+          git add .
+          git commit -m "AI applied changes for prompt" || echo "Nada para commitar"
+          git push
