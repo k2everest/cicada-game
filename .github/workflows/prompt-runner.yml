@@ -24,7 +24,7 @@ jobs:
             \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
             -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \;)
 
-          # Limita tamanho (20k chars) para não quebrar a API
+          # Limita tamanho do contexto (20k chars)
           CONTEXT=$(echo "$CONTEXT" | head -c 20000)
 
           echo "context<<EOF" >> $GITHUB_OUTPUT
@@ -41,48 +41,5 @@ jobs:
       - name: Rodar ChatGPT (OpenAI API)
         id: ai
         run: |
-          RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
-            -d "{
-              \"model\": \"gpt-4o-mini\",
-              \"messages\": [
-                {
-                  \"role\": \"system\",
-                  \"content\": \"Você é um assistente que edita código. Sua resposta deve ser **sempre** um JSON válido no formato: [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}]. Não escreva nenhuma explicação fora desse JSON.\"
-                },
-                {
-                  \"role\": \"user\",
-                  \"content\": \"Contexto do repositório:\\n${{ steps.get-context.outputs.context }}\"
-                },
-                {
-                  \"role\": \"user\",
-                  \"content\": \"${{ steps.get-prompt.outputs.prompt }}\"
-                }
-              ],
-              \"response_format\": {\"type\": \"json_object\"}
-            }" | jq -r '.choices[0].message.content')
-
-          echo "$RESPONSE" > changes.json
-          cat changes.json
-
-      - name: Validar JSON
-        run: |
-          cat changes.json | jq empty
-
-      - name: Aplicar mudanças nos arquivos
-        run: |
-          cat changes.json | jq -c '.[]' | while read i; do
-            FILE=$(echo $i | jq -r '.path')
-            CONTENT=$(echo $i | jq -r '.content')
-            mkdir -p $(dirname "$FILE")
-            echo "$CONTENT" > "$FILE"
-          done
-
-      - name: Commit automático
-        run: |
-          git config --global user.name "prompt-bot"
-          git config --global user.email "bot@example.com"
-          git add .
-          git commit -m "AI applied changes for prompt" || echo "No changes"
-          git push
+          # Escapa contexto e prompt para JSON seguro
+          CONTEXT_JSON=$(echo "${{_
