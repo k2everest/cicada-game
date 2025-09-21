@@ -17,16 +17,13 @@ jobs:
       - name: Preparar contexto do código
         id: get-context
         run: |
-          # Coleta apenas arquivos de código relevantes
           CONTEXT=$(find . -type f \
             -not -path "./.git/*" \
             -not -path "./node_modules/*" \
             \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
             -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \;)
 
-          # Limita tamanho do contexto (20k chars)
           CONTEXT=$(echo "$CONTEXT" | head -c 20000)
-
           echo "context<<EOF" >> $GITHUB_OUTPUT
           echo "$CONTEXT" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -42,4 +39,7 @@ jobs:
         id: ai
         run: |
           # Escapa contexto e prompt para JSON seguro
-          CONTEXT_JSON=$(echo "${{_
+          CONTEXT_JSON=$(echo "${{ steps.get-context.outputs.context }}" | jq -Rs .)
+          PROMPT_JSON=$(echo "${{ steps.get-prompt.outputs.prompt }}" | jq -Rs .)
+
+          RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions
