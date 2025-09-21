@@ -29,14 +29,19 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
             -d "{
               \"model\": \"gpt-4o-mini\",
-              \"response_format\": {\"type\": \"json_object\"},
               \"messages\": [
-                {\"role\": \"system\", \"content\": \"Você é um assistente que edita código. Responda **somente** com um JSON válido no formato: [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}]\"},
+                {\"role\": \"system\", \"content\": \"Você é um assistente que edita código. Responda estritamente com um JSON válido no formato: [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}] sem explicações, sem markdown, sem texto extra.\"},
                 {\"role\": \"user\", \"content\": \"${{ steps.get-prompt.outputs.prompt }}\"}
               ]
             }" | jq -r '.choices[0].message.content')
 
-          echo "$RESPONSE" > changes.json
+          if [ -z "$RESPONSE" ] || [ "$RESPONSE" = "null" ]; then
+            echo "[]" > changes.json
+          else
+            echo "$RESPONSE" > changes.json
+          fi
+
+          echo "Resposta do modelo:"
           cat changes.json
 
       - name: Validar JSON
@@ -57,5 +62,5 @@ jobs:
           git config --global user.name "prompt-bot"
           git config --global user.email "bot@example.com"
           git add .
-          git commit -m "AI applied changes for prompt"
+          git diff --cached --quiet || git commit -m "AI applied changes for prompt"
           git push
