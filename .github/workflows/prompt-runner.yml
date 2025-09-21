@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v3
 
       - name: Extrair prompt do commit
@@ -21,7 +21,7 @@ jobs:
           PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p')
           echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
 
-      - name: Preparar contexto
+      - name: Preparar contexto do repositório
         id: get-context
         run: |
           if [ ! -f .context_initialized.flag ]; then
@@ -29,40 +29,49 @@ jobs:
               -not -path "./.git/*" \
               -not -path "./node_modules/*" \
               \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
-              -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \; > full_context.txt
+              -exec sh -c 'echo "==== $1 ===="; tr -d "\000" < "$1"' _ {} \; > full_context.txt
             touch .context_initialized.flag
+            git config user.name "prompt-bot"
+            git config user.email "bot@example.com"
+            git add .context_initialized.flag
+            git commit -m "Initialize context snapshot" || echo "Flag já existe"
+            git push origin master
           else
             if git rev-parse HEAD~1 >/dev/null 2>&1; then
               FILES=$(git diff --name-only HEAD~1 HEAD)
             else
               FILES=$(git ls-files)
             fi
+
             CONTEXT=""
             for F in $FILES; do
               if [[ -f "$F" ]]; then
                 CONTEXT+="==== $F ====\n"
-                CONTEXT+=$(cat "$F")
+                CONTEXT+=$(tr -d "\000" < "$F")
                 CONTEXT+="\n"
               fi
             done
             echo -e "$CONTEXT" > full_context.txt
           fi
-          echo "context=$(jq -Rs . < full_context.txt)" >> $GITHUB_OUTPUT
 
       - name: Rodar ChatGPT (OpenAI API)
         id: ai
         run: |
-          RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
-            -d "{
-              \"model\": \"gpt-4o-mini\",
-              \"messages\": [
-                {\"role\": \"system\", \"content\": \"Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato: [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}]\"},
-                {\"role\": \"user\", \"content\": ${{ steps.get-context.outputs.context}}},
-                {\"role\": \"user\", \"content\": \"${{ steps.get-prompt.outputs.prompt }}\"}
+          RESPONSE=$(jq -n \
+            --arg prompt "${{ steps.get-prompt.outputs.prompt }}" \
+            --rawfile context full_context.txt \
+            '{
+              model: "gpt-4o-mini",
+              messages: [
+                {role: "system", content: "Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato: [{\"path\":\"arquivo.ext\",\"content\":\"novo conteúdo\"}]"},
+                {role: "user", content: $context},
+                {role: "user", content: $prompt}
               ]
-            }")
+            }' | curl -s https://api.openai.com/v1/chat/completions \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
+              -d @- )
+
           echo "$RESPONSE" > changes.json
           cat changes.json
 
@@ -80,8 +89,8 @@ jobs:
 
       - name: Commit automático
         run: |
-          git config --global user.name "prompt-bot"
-          git config --global user.email "bot@example.com"
+          git config user.name "prompt-bot"
+          git config user.email "bot@example.com"
           git add .
           git commit -m "AI applied changes for prompt" || echo "Nada para commitar"
-          git push
+          git push origin master
