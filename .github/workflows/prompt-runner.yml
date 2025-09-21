@@ -1,4 +1,4 @@
-name: Prompt Runner with Context
+name: Prompt Runner
 
 on:
   push:
@@ -14,6 +14,23 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v3
 
+      - name: Preparar contexto do código
+        id: get-context
+        run: |
+          # Coleta apenas arquivos de código relevantes
+          CONTEXT=$(find . -type f \
+            -not -path "./.git/*" \
+            -not -path "./node_modules/*" \
+            \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
+            -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \;)
+
+          # Limita tamanho (20k chars) para não quebrar a API
+          CONTEXT=$(echo "$CONTEXT" | head -c 20000)
+
+          echo "context<<EOF" >> $GITHUB_OUTPUT
+          echo "$CONTEXT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Extrair prompt do commit
         id: get-prompt
         run: |
@@ -21,16 +38,7 @@ jobs:
           PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p')
           echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
 
-      - name: Preparar contexto do código
-        id: get-context
-        run: |
-          # Lista todos os arquivos relevantes do projeto (excluindo .git)
-          CONTEXT=$(find . -type f -not -path "./.git/*" -exec echo "==== {} ====" \; -exec cat {} \;)
-          # Limitar tamanho do contexto para não estourar a API (ex: 20.000 chars)
-          CONTEXT=$(echo "$CONTEXT" | head -c 20000)
-          echo "context=$CONTEXT" >> $GITHUB_OUTPUT
-
-      - name: Rodar GPT com contexto do projeto
+      - name: Rodar ChatGPT (OpenAI API)
         id: ai
         run: |
           RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
@@ -39,13 +47,23 @@ jobs:
             -d "{
               \"model\": \"gpt-4o-mini\",
               \"messages\": [
-                {\"role\": \"system\", \"content\": \"Você é um assistente que edita código. Analise o contexto do projeto e aplique mudanças somente conforme o prompt. Responda estritamente com JSON no formato [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}]. Não explique nada.\"},
-                {\"role\": \"user\", \"content\": \"CONTEXTO DO PROJETO:\n${{ steps.get-context.outputs.context }}\n\nPROMPT DO USUÁRIO:\n${{ steps.get-prompt.outputs.prompt }}\"}
-              ]
+                {
+                  \"role\": \"system\",
+                  \"content\": \"Você é um assistente que edita código. Sua resposta deve ser **sempre** um JSON válido no formato: [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}]. Não escreva nenhuma explicação fora desse JSON.\"
+                },
+                {
+                  \"role\": \"user\",
+                  \"content\": \"Contexto do repositório:\\n${{ steps.get-context.outputs.context }}\"
+                },
+                {
+                  \"role\": \"user\",
+                  \"content\": \"${{ steps.get-prompt.outputs.prompt }}\"
+                }
+              ],
+              \"response_format\": {\"type\": \"json_object\"}
             }" | jq -r '.choices[0].message.content')
 
           echo "$RESPONSE" > changes.json
-          echo "Resposta do modelo:"
           cat changes.json
 
       - name: Validar JSON
@@ -66,5 +84,5 @@ jobs:
           git config --global user.name "prompt-bot"
           git config --global user.email "bot@example.com"
           git add .
-          git diff --cached --quiet || git commit -m "AI applied changes for prompt"
+          git commit -m "AI applied changes for prompt" || echo "No changes"
           git push
