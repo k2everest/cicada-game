@@ -17,13 +17,20 @@ jobs:
       - name: Preparar contexto do código
         id: get-context
         run: |
-          CONTEXT=$(find . -type f \
-            -not -path "./.git/*" \
-            -not -path "./node_modules/*" \
-            \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
-            -exec sh -c 'echo "==== $1 ===="; cat "$1"' _ {} \;)
+          CONTEXT=""
+          {
+            # Coleta arquivos relevantes sem quebrar por espaços ou caracteres especiais
+            find . -type f -not -path "./.git/*" -not -path "./node_modules/*" \
+              -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \
+              -print0 | while IFS= read -r -d '' file; do
+                CONTEXT="$CONTEXT==== $file ====
+$(cat "$file")
+"
+              done
+          }
 
-          CONTEXT=$(echo "$CONTEXT" | head -c 20000)
+          # Limita para 50k caracteres (janela máxima aproximada)
+          CONTEXT=$(echo "$CONTEXT" | head -c 50000)
           echo "context<<EOF" >> $GITHUB_OUTPUT
           echo "$CONTEXT" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -42,4 +49,41 @@ jobs:
           CONTEXT_JSON=$(echo "${{ steps.get-context.outputs.context }}" | jq -Rs .)
           PROMPT_JSON=$(echo "${{ steps.get-prompt.outputs.prompt }}" | jq -Rs .)
 
-          RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions
+          RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
+            -d "{
+              \"model\": \"gpt-4o-mini\",
+              \"messages\": [
+                {
+                  \"role\": \"system\",
+                  \"content\": \"Você é um assistente que edita código. Responda sempre com JSON válido no formato [{\\\"path\\\":\\\"arquivo.ext\\\",\\\"content\\\":\\\"novo conteúdo\\\"}]. Não escreva explicações fora do JSON.\"
+                },
+                {\"role\": \"user\", \"content\": $CONTEXT_JSON},
+                {\"role\": \"user\", \"content\": $PROMPT_JSON}
+              ]
+            }" | jq -r '.choices[0].message.content')
+
+          echo "$RESPONSE" > changes.json
+          cat changes.json
+
+      - name: Validar JSON
+        run: |
+          cat changes.json | jq empty
+
+      - name: Aplicar mudanças nos arquivos
+        run: |
+          cat changes.json | jq -c '.[]' | while read i; do
+            FILE=$(echo $i | jq -r '.path')
+            CONTENT=$(echo $i | jq -r '.content')
+            mkdir -p $(dirname "$FILE")
+            echo "$CONTENT" > "$FILE"
+          done
+
+      - name: Commit automático
+        run: |
+          git config --global user.name "prompt-bot"
+          git config --global user.email "bot@example.com"
+          git add .
+          git commit -m "AI applied changes for prompt" || echo "No changes"
+          git push origin master
