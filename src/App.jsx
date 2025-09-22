@@ -12,6 +12,9 @@ const symbols = [
 ]
 
 function App() {
+  // Estados de navegação
+  const [currentGame, setCurrentGame] = useState('slots') // 'slots' ou 'treasure'
+  
   // Estados principais
   const [balance, setBalance] = useState(5000)
   const [bet, setBet] = useState(50)
@@ -30,6 +33,15 @@ function App() {
   const [spinsCount, setSpinsCount] = useState(0)
   const [achievements, setAchievements] = useState([])
   const [lastWins, setLastWins] = useState([])
+  
+  // Estados do Desafio do Tesouro
+  const [treasureChests, setTreasureChests] = useState([])
+  const [currentRound, setCurrentRound] = useState(0)
+  const [roundWinnings, setRoundWinnings] = useState(0)
+  const [gameOver, setGameOver] = useState(false)
+  const [chestOpening, setChestOpening] = useState(false)
+  const [treasureLevel, setTreasureLevel] = useState(1)
+  const [treasureRisk, setTreasureRisk] = useState(0.2)
   
   // Sistema de conquistas
   const checkAchievements = (newWin, newStreak, newSpins) => {
@@ -192,6 +204,116 @@ function App() {
     setBet(Math.min(1000, balance))
   }
 
+  // ===== FUNÇÕES DO DESAFIO DO TESOURO =====
+  
+  // Inicializar nova rodada do Desafio do Tesouro
+  const startTreasureRound = () => {
+    if (balance < bet) {
+      setMessage('Saldo insuficiente')
+      return
+    }
+    
+    setBalance(prev => prev - bet)
+    setCurrentRound(prev => prev + 1)
+    setRoundWinnings(0)
+    setGameOver(false)
+    setMessage('Escolha um baú para abrir!')
+    
+    // Gerar baús para a rodada (5-8 baús por rodada)
+    const numChests = Math.floor(Math.random() * 4) + 5
+    const chests = []
+    
+    for (let i = 0; i < numChests; i++) {
+      const isTrap = Math.random() < treasureRisk
+      let reward = 0
+      
+      if (!isTrap) {
+        // Recompensas baseadas no nível e aposta
+        const baseReward = bet * (0.5 + Math.random() * 2)
+        reward = Math.floor(baseReward * treasureLevel * (1 + Math.random()))
+      }
+      
+      chests.push({
+        id: i,
+        opened: false,
+        isTrap,
+        reward,
+        type: isTrap ? 'trap' : reward > bet * 2 ? 'big' : 'small'
+      })
+    }
+    
+    setTreasureChests(chests)
+  }
+  
+  // Abrir baú
+  const openChest = (chestId) => {
+    if (chestOpening || gameOver) return
+    
+    setChestOpening(true)
+    
+    setTimeout(() => {
+      const chest = treasureChests.find(c => c.id === chestId)
+      const updatedChests = treasureChests.map(c => 
+        c.id === chestId ? { ...c, opened: true } : c
+      )
+      
+      setTreasureChests(updatedChests)
+      
+      if (chest.isTrap) {
+        // Armadilha - perde metade dos ganhos da rodada
+        const lost = Math.floor(roundWinnings * 0.5)
+        setRoundWinnings(prev => prev - lost)
+        setMessage(`ARMADILHA! Perdeu ${lost.toLocaleString()} moedas!`)
+        setGameOver(true)
+        
+        // Adicionar ganhos restantes ao saldo
+        setTimeout(() => {
+          setBalance(prev => prev + roundWinnings - lost)
+          setTreasureRisk(prev => Math.min(0.8, prev + 0.05)) // Aumenta risco
+        }, 1000)
+        
+      } else {
+        // Recompensa
+        setRoundWinnings(prev => prev + chest.reward)
+        setMessage(`+${chest.reward.toLocaleString()} moedas! Continue ou saque?`)
+        setTreasureRisk(prev => Math.min(0.8, prev + 0.1)) // Aumenta risco significativamente
+        
+        // Verificar se todos os baús seguros foram abertos
+        const remainingChests = updatedChests.filter(c => !c.opened)
+        const safeChests = remainingChests.filter(c => !c.isTrap)
+        
+        if (safeChests.length === 0) {
+          setMessage(`Todos os tesouros coletados! +${(roundWinnings + chest.reward).toLocaleString()}`)
+          setGameOver(true)
+          setTimeout(() => {
+            setBalance(prev => prev + roundWinnings + chest.reward)
+            setTreasureLevel(prev => prev + 0.1) // Aumenta nível
+          }, 1000)
+        }
+      }
+      
+      setChestOpening(false)
+    }, 1500)
+  }
+  
+  // Sacar ganhos da rodada
+  const cashOut = () => {
+    if (roundWinnings > 0) {
+      setBalance(prev => prev + roundWinnings)
+      setMessage(`Sacou ${roundWinnings.toLocaleString()} moedas!`)
+      setLastWins(prev => [...prev, roundWinnings].slice(-5))
+      setXp(prev => prev + Math.floor(roundWinnings / 10))
+      
+      // Reset para próxima rodada
+      setRoundWinnings(0)
+      setTreasureChests([])
+      setGameOver(false)
+      setTreasureRisk(0.2) // Reset do risco
+      
+      checkAchievements(roundWinnings, streak + 1, spinsCount + 1)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-white">
       {/* Header Premium estilo Amazon/Apple */}
@@ -206,6 +328,26 @@ function App() {
                 <span>Premium Gaming</span>
                 <span>•</span>
                 <span>Nível {level}</span>
+              </div>
+              
+              {/* Navegação entre jogos */}
+              <div className="flex items-center space-x-2 ml-8">
+                <Button
+                  onClick={() => setCurrentGame('slots')}
+                  variant={currentGame === 'slots' ? 'default' : 'outline'}
+                  size="sm"
+                  className="text-xs"
+                >
+                  Slots
+                </Button>
+                <Button
+                  onClick={() => setCurrentGame('treasure')}
+                  variant={currentGame === 'treasure' ? 'default' : 'outline'}
+                  size="sm"
+                  className="text-xs"
+                >
+                  Desafio do Tesouro
+                </Button>
               </div>
             </div>
             <div className="flex items-center space-x-4">
@@ -242,37 +384,96 @@ function App() {
                     </p>
                   </div>
                   
-                  {/* Slot Machine Premium */}
-                  <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20">
-                    <div className="flex justify-center space-x-3 mb-6">
-                      {reels.map((reelIndex, index) => (
-                        <div
-                          key={index}
-                          className={`w-16 h-16 lg:w-20 lg:h-20 bg-white rounded-xl flex items-center justify-center shadow-lg ${
-                            spinning ? 'animate-pulse' : ''
-                          } ${showCelebration ? 'animate-bounce' : ''} ${nearMiss && index === 2 ? 'ring-2 ring-red-400' : ''}`}
-                        >
-                          <span className="text-2xl lg:text-3xl">
-                            {symbols[reelIndex].emoji}
-                          </span>
+                  {/* Conteúdo do jogo baseado na seleção */}
+                  {currentGame === 'slots' ? (
+                    /* Slot Machine Premium */
+                    <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20">
+                      <div className="flex justify-center space-x-3 mb-6">
+                        {reels.map((reelIndex, index) => (
+                          <div
+                            key={index}
+                            className={`w-16 h-16 lg:w-20 lg:h-20 bg-white rounded-xl flex items-center justify-center shadow-lg ${
+                              spinning ? 'animate-pulse' : ''
+                            } ${showCelebration ? 'animate-bounce' : ''} ${nearMiss && index === 2 ? 'ring-2 ring-red-400' : ''}`}
+                          >
+                            <span className="text-2xl lg:text-3xl">
+                              {symbols[reelIndex].emoji}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                      
+                      <div className="text-center mb-4">
+                        <div className={`inline-block px-4 py-2 rounded-full text-sm font-medium ${
+                          winAmount > 1000 
+                            ? 'bg-blue-400 text-white' 
+                            : winAmount > 0 
+                            ? 'bg-green-400 text-white'
+                            : nearMiss
+                            ? 'bg-red-400 text-white'
+                            : 'bg-white/20 text-white'
+                        }`}>
+                          {message}
                         </div>
-                      ))}
-                    </div>
-                    
-                    <div className="text-center mb-4">
-                      <div className={`inline-block px-4 py-2 rounded-full text-sm font-medium ${
-                        winAmount > 1000 
-                          ? 'bg-blue-400 text-white' 
-                          : winAmount > 0 
-                          ? 'bg-green-400 text-white'
-                          : nearMiss
-                          ? 'bg-red-400 text-white'
-                          : 'bg-white/20 text-white'
-                      }`}>
-                        {message}
                       </div>
                     </div>
-                  </div>
+                  ) : (
+                    /* Desafio do Tesouro */
+                    <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20">
+                      <div className="text-center mb-6">
+                        <h3 className="text-2xl font-bold mb-2">Desafio do Tesouro</h3>
+                        <p className="text-blue-100">Abra baús e colete tesouros, mas cuidado com as armadilhas!</p>
+                      </div>
+                      
+                      {treasureChests.length > 0 ? (
+                        <div className="grid grid-cols-4 gap-3 mb-6">
+                          {treasureChests.map((chest) => (
+                            <button
+                              key={chest.id}
+                              onClick={() => openChest(chest.id)}
+                              disabled={chest.opened || chestOpening || gameOver}
+                              className={`w-16 h-16 rounded-xl flex items-center justify-center text-2xl transition-all duration-300 ${
+                                chest.opened
+                                  ? chest.isTrap
+                                    ? 'bg-red-500 text-white'
+                                    : 'bg-green-500 text-white'
+                                  : 'bg-white hover:bg-gray-100 shadow-lg hover:shadow-xl transform hover:scale-105'
+                              } ${chestOpening ? 'animate-pulse' : ''}`}
+                            >
+                              {chest.opened 
+                                ? chest.isTrap 
+                                  ? '💀' 
+                                  : chest.type === 'big' 
+                                    ? '💎' 
+                                    : '💰'
+                                : '📦'
+                              }
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-center py-8">
+                          <div className="text-6xl mb-4">🏴‍☠️</div>
+                          <p className="text-blue-100 mb-4">Pronto para a aventura?</p>
+                        </div>
+                      )}
+                      
+                      <div className="text-center">
+                        <div className={`inline-block px-4 py-2 rounded-full text-sm font-medium ${
+                          roundWinnings > 0 
+                            ? 'bg-green-400 text-white' 
+                            : 'bg-white/20 text-white'
+                        }`}>
+                          {message}
+                        </div>
+                        {roundWinnings > 0 && (
+                          <div className="mt-2 text-green-300 font-bold">
+                            Ganhos da rodada: {roundWinnings.toLocaleString()}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -413,22 +614,47 @@ function App() {
 
           {/* Botões Principais */}
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Button
-              onClick={spin}
-              disabled={spinning || balance < bet}
-              className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold text-lg px-12 py-4 rounded-xl shadow-lg transform hover:scale-105 transition-all duration-200"
-            >
-              {spinning ? 'Girando...' : 'GIRAR'}
-            </Button>
-            
-            <Button
-              onClick={() => setAutoPlay(!autoPlay)}
-              disabled={spinning || balance < bet}
-              variant={autoPlay ? "destructive" : "outline"}
-              className="font-semibold text-lg px-8 py-4 rounded-xl"
-            >
-              {autoPlay ? 'PARAR AUTO' : 'AUTO PLAY'}
-            </Button>
+            {currentGame === 'slots' ? (
+              <>
+                <Button
+                  onClick={spin}
+                  disabled={spinning || balance < bet}
+                  className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold text-lg px-12 py-4 rounded-xl shadow-lg transform hover:scale-105 transition-all duration-200"
+                >
+                  {spinning ? 'Girando...' : 'GIRAR'}
+                </Button>
+                
+                <Button
+                  onClick={() => setAutoPlay(!autoPlay)}
+                  disabled={spinning || balance < bet}
+                  variant={autoPlay ? "destructive" : "outline"}
+                  className="font-semibold text-lg px-8 py-4 rounded-xl"
+                >
+                  {autoPlay ? 'PARAR AUTO' : 'AUTO PLAY'}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  onClick={startTreasureRound}
+                  disabled={chestOpening || balance < bet || (treasureChests.length > 0 && !gameOver)}
+                  className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white font-semibold text-lg px-12 py-4 rounded-xl shadow-lg transform hover:scale-105 transition-all duration-200"
+                >
+                  {treasureChests.length > 0 && !gameOver ? 'Rodada em Andamento' : 'INICIAR EXPEDIÇÃO'}
+                </Button>
+                
+                {roundWinnings > 0 && !gameOver && (
+                  <Button
+                    onClick={cashOut}
+                    disabled={chestOpening}
+                    variant="outline"
+                    className="font-semibold text-lg px-8 py-4 rounded-xl border-green-500 text-green-600 hover:bg-green-50"
+                  >
+                    SACAR ({roundWinnings.toLocaleString()})
+                  </Button>
+                )}
+              </>
+            )}
           </div>
         </div>
       </section>
