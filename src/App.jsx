@@ -36,7 +36,6 @@ function App() {
   
   // Estados do Desafio do Tesouro
   const [treasureChests, setTreasureChests] = useState([])
-  const [currentRound, setCurrentRound] = useState(0)
   const [roundWinnings, setRoundWinnings] = useState(0)
   const [gameOver, setGameOver] = useState(false)
   const [chestOpening, setChestOpening] = useState(false)
@@ -192,7 +191,7 @@ function App() {
       const timer = setTimeout(spin, 1000)
       return () => clearTimeout(timer)
     }
-  }, [autoPlay, spinning, balance, bet])
+  }, [autoPlay, spinning, balance, bet, spin])
 
   // Controles de aposta
   const adjustBet = (amount) => {
@@ -214,7 +213,6 @@ function App() {
     }
     
     setBalance(prev => prev - bet)
-    setCurrentRound(prev => prev + 1)
     setRoundWinnings(0)
     setGameOver(false)
     setMessage('Escolha um baú para abrir!')
