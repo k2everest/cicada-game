@@ -61,7 +61,7 @@ jobs:
             --arg prompt "${{ steps.get-prompt.outputs.prompt }}" \
             --rawfile context full_context.txt \
             '{
-              model: "gpt-4o-mini",
+              model: "gpt-5",
               messages: [
                 {role: "system", content: "Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato: [{\"path\":\"arquivo.ext\",\"content\":\"novo conteúdo\"}]"},
                 {role: "user", content: $context},
