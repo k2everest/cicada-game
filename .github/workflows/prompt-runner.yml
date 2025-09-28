@@ -1,96 +1,77 @@
-name: Prompt Runner
+name: Chunk & Send to GPT-5 with Final Merge
 
 on:
-  push:
-    branches:
-      - master
+  workflow_dispatch:
+    inputs:
+      input_file:
+        description: 'Path to input file in repo (ex: docs/large_input.txt)'
+        required: true
+        default: 'input.txt'
+      max_tokens:
+        description: 'Tokens por chunk (seguro: 1000)'
+        required: false
+        default: '1000'
 
 jobs:
-  run-prompt:
-    if: contains(github.event.head_commit.message, 'prompt:')
+  chunk_and_send:
     runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      MODEL: gpt-5-mini
+      INPUT_FILE: ${{ github.event.inputs.input_file }}
+      MAX_TOKENS_PER_CHUNK: ${{ github.event.inputs.max_tokens }}
+      TEMPERATURE: '0.0'
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Extrair prompt do commit
-        id: get-prompt
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
         run: |
-          COMMIT_MSG="${{ github.event.head_commit.message }}"
-          PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p')
-          echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir openai tiktoken
 
-      - name: Preparar contexto do repositório
-        id: get-context
+      - name: Chunk file and send to OpenAI
         run: |
-          if [ ! -f .context_initialized.flag ]; then
-            find . -type f \
-              -not -path "./.git/*" \
-              -not -path "./node_modules/*" \
-              \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
-              -exec sh -c 'echo "==== $1 ===="; tr -d "\000" < "$1"' _ {} \; > full_context.txt
-            touch .context_initialized.flag
-            git config user.name "prompt-bot"
-            git config user.email "bot@example.com"
-            git add .context_initialized.flag
-            git commit -m "Initialize context snapshot" || echo "Flag já existe"
-            git push origin master
-          else
-            if git rev-parse HEAD~1 >/dev/null 2>&1; then
-              FILES=$(git diff --name-only HEAD~1 HEAD)
-            else
-              FILES=$(git ls-files)
-            fi
+          python - <<'PY'
+          import os, json, math, time
+          from pathlib import Path
+          import openai
+          try:
+              import tiktoken
+          except Exception:
+              tiktoken = None
 
-            CONTEXT=""
-            for F in $FILES; do
-              if [[ -f "$F" ]]; then
-                CONTEXT+="==== $F ====\n"
-                CONTEXT+=$(tr -d "\000" < "$F")
-                CONTEXT+="\n"
-              fi
-            done
-            echo -e "$CONTEXT" > full_context.txt
-          fi
+          model = os.environ.get('MODEL', 'gpt-5-mini')
+          api_key = os.environ.get('OPENAI_API_KEY')
+          input_path = os.environ.get('INPUT_FILE', 'input.txt')
+          max_tokens = int(os.environ.get('MAX_TOKENS_PER_CHUNK', '1000'))
+          temperature = float(os.environ.get('TEMPERATURE', '0.0'))
 
-      - name: Rodar ChatGPT (OpenAI API)
-        id: ai
-        run: |
-          RESPONSE=$(jq -n \
-            --arg prompt "${{ steps.get-prompt.outputs.prompt }}" \
-            --rawfile context full_context.txt \
-            '{
-              model: "gpt-5",
-              messages: [
-                {role: "system", content: "Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato: [{\"path\":\"arquivo.ext\",\"content\":\"novo conteúdo\"}]"},
-                {role: "user", content: $context},
-                {role: "user", content: $prompt}
-              ]
-            }' | curl -s https://api.openai.com/v1/chat/completions \
-              -H "Content-Type: application/json" \
-              -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
-              -d @- )
+          openai.api_key = api_key
+          p = Path(input_path)
+          if not p.exists():
+              raise SystemExit(f"❌ Input file not found: {input_path}")
 
-          echo "$RESPONSE" > changes.json
-          cat changes.json
+          text = p.read_text(encoding='utf-8')
 
-      - name: Validar JSON
-        run: cat changes.json | jq empty
+          encoding = None
+          if tiktoken:
+              try:
+                  encoding = tiktoken.encoding_for_model(model)
+              except Exception:
+                  encoding = tiktoken.get_encoding('cl100k_base')
 
-      - name: Aplicar mudanças nos arquivos
-        run: |
-          cat changes.json | jq -c '.[]' | while read i; do
-            FILE=$(echo $i | jq -r '.path')
-            CONTENT=$(echo $i | jq -r '.content')
-            mkdir -p $(dirname "$FILE")
-            echo "$CONTENT" > "$FILE"
-          done
+          def estimate_tokens(s: str) -> int:
+              return len(encoding.encode(s)) if encoding else max(1, len(s)//4)
 
-      - name: Commit automático
-        run: |
-          git config user.name "prompt-bot"
-          git config user.email "bot@example.com"
-          git add .
-          git commit -m "AI applied changes for prompt" || echo "Nada para commitar"
-          git push origin master
+          def split_by_tokens(s: str, max_toks: int):
+              if encoding:
+                  ids = encoding.encode(s)
+                  return [encoding.decode(ids[i:i+max_toks]) for i in range(0, len(ids), max_toks)]
+              return [s[i:i+max_toks*4] for i*_]()]()
