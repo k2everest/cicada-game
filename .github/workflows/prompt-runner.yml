@@ -74,4 +74,85 @@ jobs:
               if encoding:
                   ids = encoding.encode(s)
                   return [encoding.decode(ids[i:i+max_toks]) for i in range(0, len(ids), max_toks)]
-              return [s[i:i+max_toks*4] for i*_]()]()
+              return [s[i:i+max_toks*4] for i in range(0, len(s), max_toks*4)]
+
+          out_dir = Path('gpt_chunks_output')
+          out_dir.mkdir(parents=True, exist_ok=True)
+
+          chunks = split_by_tokens(text, max_tokens)
+          print(f'📌 Total chunks: {len(chunks)}')
+
+          results = []
+          for idx, chunk in enumerate(chunks, start=1):
+              out_file = out_dir / f'chunk_{idx:03d}.json'
+              if out_file.exists():
+                  print(f"⏭️ Skipping chunk {idx}, already processed")
+                  results.append(str(out_file))
+                  continue
+
+              print(f'--- Sending chunk {idx}/{len(chunks)} (~{estimate_tokens(chunk)} tokens)')
+              try:
+                  response = openai.ChatCompletion.create(
+                      model=model,
+                      messages=[
+                          {"role": "system", "content": f"This is chunk {idx} of {len(chunks)}. Summarize with JSON keys: summary, highlights, raw."},
+                          {"role": "user", "content": chunk}
+                      ],
+                      temperature=temperature,
+                      max_tokens=min(1024, max(256, max_tokens//2))
+                  )
+                  assistant_text = response['choices'][0]['message']['content']
+                  payload = {
+                      'chunk_index': idx,
+                      'chunk_tokens': estimate_tokens(chunk),
+                      'input_excerpt': chunk[:500],
+                      'assistant': assistant_text,
+                  }
+                  out_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+                  results.append(str(out_file))
+                  time.sleep(10)  # pausa para não estourar TPM
+              except Exception as e:
+                  print(f'❌ Error on chunk {idx}:', e)
+                  (out_dir/f'chunk_{idx:03d}_failed.txt').write_text(chunk[:10000], encoding='utf-8')
+
+          (out_dir/'chunks_index.json').write_text(json.dumps({'files': results}, ensure_ascii=False, indent=2), encoding='utf-8')
+          print('✅ Done. Outputs in gpt_chunks_output/')
+          PY
+
+      - name: Merge summaries into final document
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          out_dir = Path('gpt_chunks_output')
+          index_file = out_dir/'chunks_index.json'
+          if not index_file.exists():
+              raise SystemExit("❌ No chunks_index.json found")
+
+          index = json.loads(index_file.read_text(encoding='utf-8'))
+          summaries, failed = [], []
+
+          for f in index.get('files', []):
+              p = Path(f)
+              if p.exists():
+                  data = json.loads(p.read_text(encoding='utf-8'))
+                  summaries.append(f"### Chunk {data['chunk_index']}\n{data.get('assistant','')}\n")
+              else:
+                  failed.append(f)
+
+          if failed:
+              raise SystemExit(f"❌ Merge cancelado: {len(failed)} chunks faltando ou com erro: {failed}")
+
+          merged = "\n\n".join(summaries)
+          final_path = out_dir/'final_summary.txt'
+          final_path.write_text(merged, encoding='utf-8')
+          print(f"✅ Final summary generated at {final_path}")
+          PY
+
+      - name: Upload outputs (artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpt-chunks-output
+          path: gpt_chunks_output/
