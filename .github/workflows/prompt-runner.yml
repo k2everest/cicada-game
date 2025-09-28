@@ -94,6 +94,3 @@ jobs:
           git add .
           git commit -m "AI applied changes for prompt" || echo "Nada para commitar"
           git push origin master
-
-
-          
