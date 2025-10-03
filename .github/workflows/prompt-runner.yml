@@ -4,17 +4,25 @@ on:
   push:
     branches:
       - master
-      
+    paths:
+      - '**.py'
+      - '**.js'
+      - '**.ts'
+      - '**.java'
+      - '**.yml'
+      - '**.yaml'
+      - '**.json'
+      - '**.md'
+      - '**.sh'
+      - '**.txt'
 
 jobs:
-  prepare-and-run:
-    if: contains(github.event.head_commit.message, 'prompt:')
+  run-prompt:
     runs-on: ubuntu-latest
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       MODEL: gpt-5-mini
-      MAX_TOKENS_PER_CHUNK: '1000'
-      TEMPERATURE: '1.0'
+      MAX_TOKENS_PER_CHUNK: '1500'
 
     steps:
       - name: Checkout repository
@@ -36,13 +44,18 @@ jobs:
           echo "" > input.txt
           EXTENSIONS="py js ts java yml yaml json md sh txt"
 
-          if [ ! -d responses ] || [ ! -s responses/.first_run_done ]; then
+          if [ ! -f responses/.first_run_done ]; then
             echo "📌 First run: sending entire repo"
             git ls-files > modified_files.txt
             touch responses/.first_run_done
           else
-            echo "📌 Sending only modified files (diff)"
-            git diff --name-only HEAD~1 HEAD > modified_files.txt
+            if [ "$(git rev-list --count HEAD)" -gt 1 ]; then
+              echo "📌 Sending only modified files (diff)"
+              git diff --name-only HEAD~1 HEAD > modified_files.txt
+            else
+              echo "📌 Only one commit found, sending all files"
+              git ls-files > modified_files.txt
+            fi
           fi
 
           while read file; do
@@ -52,7 +65,11 @@ jobs:
               if echo "$EXTENSIONS" | grep -qw "$ext" && [ "$size" -le 500000 ]; then
                 echo "----- FILE: $file -----" >> input.txt
                 if [ -f responses/.first_run_done ]; then
-                  git diff HEAD~1 HEAD -- "$file" >> input.txt
+                  if [ "$(git rev-list --count HEAD)" -gt 1 ]; then
+                    git diff HEAD~1 HEAD -- "$file" >> input.txt
+                  else
+                    cat "$file" >> input.txt
+                  fi
                 else
                   cat "$file" >> input.txt
                 fi
@@ -63,49 +80,9 @@ jobs:
             fi
           done < modified_files.txt
 
-      - name: Chunk, group and send to GPT
+      - name: Chunk file and send to OpenAI
         run: |
           python - <<'PY'
           import os, time, json
           from pathlib import Path
-          import openai
-          try:
-              import tiktoken
-          except Exception:
-              tiktoken = None
-
-          model = os.environ.get("MODEL", "gpt-5-mini")
-          api_key = os.environ.get("OPENAI_API_KEY")
-          max_tokens = int(os.environ.get("MAX_TOKENS_PER_CHUNK", "1000"))
-          temperature = float(os.environ.get("TEMPERATURE", "1.0"))
-          input_path = "input.txt"
-
-          openai.api_key = api_key
-          p = Path(input_path)
-          if not p.exists() or p.stat().st_size == 0:
-              print("⚠️ Nothing to send, skipping.")
-              raise SystemExit(0)
-
-          text = p.read_text(encoding="utf-8", errors="ignore")
-
-          # encoding para contar tokens
-          encoding = None
-          if tiktoken:
-              try:
-                  encoding = tiktoken.encoding_for_model(model)
-              except Exception:
-                  encoding = tiktoken.get_encoding("cl100k_base")
-
-          def estimate_tokens(s: str) -> int:
-              return len(encoding.encode(s)) if encoding else max(1, len(s)//4)
-              
-
-          def group_chunks(lines, max_toks):
-              """Agrupa várias linhas em blocos até atingir max_toks"""
-              groups, current, current_tokens = [], [], 0
-              for line in lines:
-                  tks = estimate_tokens(line)
-                  if current_tokens + tks > max_toks and current:
-                      groups.append("\n".join(current))
-                      current, current_tokens = [], 0
-                  current.append(line
+          from openai impor
