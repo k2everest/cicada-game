@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      
 
 jobs:
   prepare-and-run:
