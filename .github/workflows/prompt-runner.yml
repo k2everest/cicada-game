@@ -87,13 +87,3 @@ jobs:
                       temperature=temperature
                   )
                   output = resp.choices[0].message["content"]
-                  print(f"✅ Response {i}: {output[:200]}...\n")
-              except Exception as e:
-
-
-
-
-              
-                  print(f"❌ Error on chunk {i}: {e}")
-              time.sleep(10)
-          PY
