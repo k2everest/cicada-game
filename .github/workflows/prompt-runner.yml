@@ -1,6 +1,5 @@
 name: Prompt Runner
 
-
 on:
   push:
     branches:
@@ -86,4 +85,56 @@ jobs:
           python - <<'PY'
           import os, time, json
           from pathlib import Path
-          from openai impor
+          from openai import OpenAI
+          try:
+              import tiktoken
+          except ImportError:
+              tiktoken = None
+
+          client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+          model = os.environ.get("MODEL", "gpt-5-mini")
+          max_tokens = int(os.environ.get("MAX_TOKENS_PER_CHUNK", "1500"))
+
+          input_path = Path("input.txt")
+          if not input_path.exists():
+              raise SystemExit("❌ input.txt not found")
+
+          text = input_path.read_bytes().decode("utf-8", errors="ignore")
+
+          # Encoding
+          encoding = None
+          if tiktoken:
+              try:
+                  encoding = tiktoken.encoding_for_model(model)
+              except Exception:
+                  encoding = tiktoken.get_encoding("cl100k_base")
+
+          def split_by_tokens(s: str, max_toks: int):
+              if encoding:
+                  ids = encoding.encode(s)
+                  return [encoding.decode(ids[i:i+max_toks]) for i in range(0, len(ids), max_toks)]
+              else:
+                  return [s[i:i+max_toks*4] for i in range(0, len(s), max_toks*4)]
+
+          chunks = split_by_tokens(text, max_tokens)
+          print(f"📌 Total chunks: {len(chunks)}")
+
+          for i, chunk in enumerate(chunks, 1):
+              print(f"\n--- Sending chunk {i}/{len(chunks)} ---")
+              try:
+                  resp = client.chat.completions.create(
+                      model=model,
+                      messages=[
+                          {"role": "system", "content": "You are a programming assistant integrated with GitHub Actions. Always answer in strict JSON."},
+                          {"role": "user", "content": chunk}
+                      ]
+                  )
+                  output = resp.choices[0].message.content
+                  out_file = Path("responses") / f"response_{i}.json"
+                  with out_file.open("w", encoding="utf-8") as f:
+                      f.write(output)
+                  print(f"✅ Saved response {i} -> {out_file}")
+              except Exception as e:
+                  print(f"❌ Error on chunk {i}: {e}")
+              time.sleep(3)
+          PY
