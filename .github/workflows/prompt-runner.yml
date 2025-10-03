@@ -29,47 +29,40 @@ jobs:
           python -m pip install --upgrade pip
           pip install --no-cache-dir openai tiktoken
 
-      - name: Prepare input (full repo on first run, diff afterwards)
+      - name: Prepare input (full repo first run, diff afterwards)
         run: |
           mkdir -p responses
           echo "" > input.txt
           EXTENSIONS="py js ts java yml yaml json md sh txt"
 
-          # Se primeira execução (responses vazio ou input.txt não existe)
-          if [ ! -d responses ] || [ ! -s input.txt ]; then
+          if [ ! -d responses ] || [ ! -s responses/.first_run_done ]; then
             echo "📌 First run: sending entire repo"
-            git ls-files | while read file; do
-              if [ -f "$file" ]; then
-                ext="${file##*.}"
-                size=$(wc -c <"$file")
-                if echo "$EXTENSIONS" | grep -qw "$ext" && [ "$size" -le 500000 ]; then
-                  echo "----- FILE: $file -----" >> input.txt
-                  cat "$file" >> input.txt || true
-                  echo "" >> input.txt
-                else
-                  echo "⚠️ Skipping irrelevant/large file: $file ($size bytes)"
-                fi
-              fi
-            done
+            git ls-files > modified_files.txt
+            touch responses/.first_run_done
           else
             echo "📌 Sending only modified files (diff)"
             git diff --name-only HEAD~1 HEAD > modified_files.txt
-            while read file; do
-              if [ -f "$file" ]; then
-                ext="${file##*.}"
-                size=$(wc -c <"$file")
-                if echo "$EXTENSIONS" | grep -qw "$ext" && [ "$size" -le 500000 ]; then
-                  echo "----- FILE: $file -----" >> input.txt
-                  git diff HEAD~1 HEAD -- "$file" >> input.txt
-                  echo "" >> input.txt
-                else
-                  echo "⚠️ Skipping irrelevant/large file: $file ($size bytes)"
-                fi
-              fi
-            done < modified_files.txt
           fi
 
-      - name: Chunk and send to GPT
+          while read file; do
+            if [ -f "$file" ]; then
+              ext="${file##*.}"
+              size=$(wc -c <"$file")
+              if echo "$EXTENSIONS" | grep -qw "$ext" && [ "$size" -le 500000 ]; then
+                echo "----- FILE: $file -----" >> input.txt
+                if [ -f responses/.first_run_done ]; then
+                  git diff HEAD~1 HEAD -- "$file" >> input.txt
+                else
+                  cat "$file" >> input.txt
+                fi
+                echo "" >> input.txt
+              else
+                echo "⚠️ Skipping irrelevant/large file: $file ($size bytes)"
+              fi
+            fi
+          done < modified_files.txt
+
+      - name: Chunk, group and send to GPT
         run: |
           python - <<'PY'
           import os, time, json
@@ -102,37 +95,15 @@ jobs:
               except Exception:
                   encoding = tiktoken.get_encoding("cl100k_base")
 
-          def split_by_tokens(s: str, max_toks: int):
-              if encoding:
-                  ids = encoding.encode(s)
-                  return [encoding.decode(ids[i:i+max_toks]) for i in range(0, len(ids), max_toks)]
-              else:
-                  return [s[i:i+max_toks*4] for i in range(0, len(s), max_toks*4)]
+          def estimate_tokens(s: str) -> int:
+              return len(encoding.encode(s)) if encoding else max(1, len(s)//4)
 
-          chunks = split_by_tokens(text, max_tokens)
-          print(f"📌 Total chunks: {len(chunks)}")
-
-          for i, chunk in enumerate(chunks, 1):
-              print(f"\n--- Sending chunk {i}/{len(chunks)} ---")
-              try:
-                  resp = openai.chat.completions.create(
-                      model=model,
-                      messages=[
-                          {"role": "system", "content": "Você é uma assistente de programação experiente. Sempre responda apenas em JSON válido com chaves: status, mensagem, acao."},
-                          {"role": "user", "content": chunk}
-                      ],
-                      temperature=temperature
-                  )
-                  output = resp.choices[0].message.content
-                  try:
-                      data = json.loads(output)
-                  except Exception:
-                      data = {"status":"erro","mensagem":output,"acao":""}
-                  out_file = f"responses/resp_{i}.json"
-                  with open(out_file, "w", encoding="utf-8") as f:
-                      json.dump(data, f, ensure_ascii=False, indent=2)
-                  print(f"✅ Response {i} saved to {out_file}")
-              except Exception as e:
-                  print(f"❌ Error on chunk {i}: {e}")
-              time.sleep(5)
-          PY
+          def group_chunks(lines, max_toks):
+              """Agrupa várias linhas em blocos até atingir max_toks"""
+              groups, current, current_tokens = [], [], 0
+              for line in lines:
+                  tks = estimate_tokens(line)
+                  if current_tokens + tks > max_toks and current:
+                      groups.append("\n".join(current))
+                      current, current_tokens = [], 0
+                  current.append(line
