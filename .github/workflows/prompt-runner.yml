@@ -1,20 +1,17 @@
-name: Chunk & Send to GPT-5 (fixed 1000 tokens)
+name: Prompt Runner
 
 on:
-  workflow_dispatch:
-    inputs:
-      input_file:
-        description: 'Path to input file in repo (ex: docs/large_input.txt)'
-        required: true
-        default: 'input.txt'
+  push:
+    branches:
+      - master
 
 jobs:
-  chunk_and_send:
+  run-prompt:
+    if: contains(github.event.head_commit.message, 'prompt:')
     runs-on: ubuntu-latest
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       MODEL: gpt-5-mini
-      INPUT_FILE: ${{ github.event.inputs.input_file }}
       MAX_TOKENS_PER_CHUNK: "1000"
       TEMPERATURE: "0.0"
 
@@ -32,8 +29,29 @@ jobs:
           python -m pip install --upgrade pip
           pip install --no-cache-dir openai tiktoken
 
-      - name: Chunk file and send to OpenAI
+      - name: Prepare input (full repo first run, diffs later)
+        id: prepare
         run: |
+          git fetch origin master
+          if [ ! -f .last_processed_commit ]; then
+            echo "📌 First run detected, preparing full repo snapshot..."
+            git ls-files | while read file; do
+              echo "----- FILE: $file -----" >> input.txt
+              cat "$file" >> input.txt || true
+              echo "" >> input.txt
+            done
+            echo "::set-output name=input_file::input.txt"
+          else
+            LAST_COMMIT=$(cat .last_processed_commit)
+            echo "📌 Diffing since $LAST_COMMIT..."
+            git diff --unified=0 $LAST_COMMIT HEAD > changes.diff
+            echo "::set-output name=input_file::changes.diff"
+          fi
+          git rev-parse HEAD > .last_processed_commit
+
+      - name: Run Prompt Runner
+        run: |
+          INPUT_FILE="${{ steps.prepare.outputs.input_file }}"
           python - <<'PY'
           import os, time
           from pathlib import Path
@@ -45,9 +63,9 @@ jobs:
 
           model = os.environ.get("MODEL", "gpt-5-mini")
           api_key = os.environ.get("OPENAI_API_KEY")
-          input_path = os.environ.get("INPUT_FILE", "input.txt")
           max_tokens = int(os.environ.get("MAX_TOKENS_PER_CHUNK", "1000"))
           temperature = float(os.environ.get("TEMPERATURE", "0.0"))
+          input_path = os.environ.get("INPUT_FILE", "input.txt")
 
           openai.api_key = api_key
           p = Path(input_path)
@@ -55,6 +73,9 @@ jobs:
               raise SystemExit(f"❌ Input file not found: {input_path}")
 
           text = p.read_text(encoding="utf-8")
+          if not text.strip():
+              print("⚠️ Nothing to send, skipping.")
+              raise SystemExit(0)
 
           # Escolhe encoding adequado
           encoding = None
@@ -69,7 +90,6 @@ jobs:
                   ids = encoding.encode(s)
                   return [encoding.decode(ids[i:i+max_toks]) for i in range(0, len(ids), max_toks)]
               else:
-                  # fallback aproximado
                   return [s[i:i+max_toks*4] for i in range(0, len(s), max_toks*4)]
 
           chunks = split_by_tokens(text, max_tokens)
@@ -89,3 +109,5 @@ jobs:
                   print(f"❌ Error on chunk {i}: {e}")
               time.sleep(10)
           PY
+        env:
+          INPUT_FILE: ${{ steps.prepare.outputs.input_file }}
