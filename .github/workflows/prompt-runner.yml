@@ -15,8 +15,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       MODEL: gpt-5-mini
       INPUT_FILE: ${{ github.event.inputs.input_file }}
-      MAX_TOKENS_PER_CHUNK: '1000'
-      TEMPERATURE: '0.0'
+      MAX_TOKENS_PER_CHUNK: "1000"
+      TEMPERATURE: "0.0"
 
     steps:
       - name: Checkout repository
@@ -25,7 +25,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
@@ -35,7 +35,7 @@ jobs:
       - name: Chunk file and send to OpenAI
         run: |
           python - <<'PY'
-          import os, json, time
+          import os, time
           from pathlib import Path
           import openai
           try:
@@ -43,18 +43,18 @@ jobs:
           except Exception:
               tiktoken = None
 
-          model = os.environ.get('MODEL', 'gpt-5-mini')
-          api_key = os.environ.get('OPENAI_API_KEY')
-          input_path = os.environ.get('INPUT_FILE', 'input.txt')
-          max_tokens = int(os.environ.get('MAX_TOKENS_PER_CHUNK', '1000'))
-          temperature = float(os.environ.get('TEMPERATURE', '0.0'))
+          model = os.environ.get("MODEL", "gpt-5-mini")
+          api_key = os.environ.get("OPENAI_API_KEY")
+          input_path = os.environ.get("INPUT_FILE", "input.txt")
+          max_tokens = int(os.environ.get("MAX_TOKENS_PER_CHUNK", "1000"))
+          temperature = float(os.environ.get("TEMPERATURE", "0.0"))
 
           openai.api_key = api_key
           p = Path(input_path)
           if not p.exists():
               raise SystemExit(f"❌ Input file not found: {input_path}")
 
-          text = p.read_text(encoding='utf-8')
+          text = p.read_text(encoding="utf-8")
 
           # Escolhe encoding adequado
           encoding = None
@@ -62,10 +62,7 @@ jobs:
               try:
                   encoding = tiktoken.encoding_for_model(model)
               except Exception:
-                  encoding = tiktoken.get_encoding('cl100k_base')
-
-          def estimate_tokens(s: str) -> int:
-              return len(encoding.encode(s)) if encoding else max(1, len(s)//4)
+                  encoding = tiktoken.get_encoding("cl100k_base")
 
           def split_by_tokens(s: str, max_toks: int):
               if encoding:
@@ -84,9 +81,11 @@ jobs:
                   resp = openai.ChatCompletion.create(
                       model=model,
                       messages=[{"role": "user", "content": chunk}],
-
-
-                      
                       temperature=temperature
                   )
                   output = resp.choices[0].message["content"]
+                  print(f"✅ Response {i}: {output[:200]}...\n")
+              except Exception as e:
+                  print(f"❌ Error on chunk {i}: {e}")
+              time.sleep(10)
+          PY
