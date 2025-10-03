@@ -92,12 +92,12 @@ jobs:
           for i, chunk in enumerate(chunks, 1):
               print(f"\n--- Sending chunk {i}/{len(chunks)} ---")
               try:
-                  resp = openai.ChatCompletion.create(
+                  resp = openai.chat.completions.create(
                       model=model,
                       messages=[{"role": "user", "content": chunk}],
                       temperature=temperature
                   )
-                  output = resp.choices[0].message["content"]
+                  output = resp.choices[0].message.content
                   print(f"✅ Response {i}: {output[:200]}...\n")
               except Exception as e:
                   print(f"❌ Error on chunk {i}: {e}")
