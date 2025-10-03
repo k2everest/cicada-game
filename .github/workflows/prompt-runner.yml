@@ -97,6 +97,7 @@ jobs:
 
           def estimate_tokens(s: str) -> int:
               return len(encoding.encode(s)) if encoding else max(1, len(s)//4)
+              
 
           def group_chunks(lines, max_toks):
               """Agrupa várias linhas em blocos até atingir max_toks"""
