@@ -12,27 +12,12 @@ jobs:
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       MODEL: gpt-5-mini
-      INPUT_FILE: input.txt
       MAX_TOKENS_PER_CHUNK: '1000'
-      TEMPERATURE: '0.0'
-
+      TEMPERATURE: '1.0'
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Prepare input file (only text files)
-        run: |
-          echo "" > input.txt
-          git ls-files | while read file; do
-            if file "$file" | grep -q text; then
-              echo "----- FILE: $file -----" >> input.txt
-              cat "$file" >> input.txt || true
-              echo "" >> input.txt
-            else
-              echo "⚠️ Skipping binary: $file"
-            fi
-          done
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -44,10 +29,50 @@ jobs:
           python -m pip install --upgrade pip
           pip install --no-cache-dir openai tiktoken
 
-      - name: Chunk file and send to OpenAI
+      - name: Prepare input (full repo on first run, diff afterwards)
+        run: |
+          mkdir -p responses
+          echo "" > input.txt
+          EXTENSIONS="py js ts java yml yaml json md sh txt"
+
+          # Se primeira execução (responses vazio ou input.txt não existe)
+          if [ ! -d responses ] || [ ! -s input.txt ]; then
+            echo "📌 First run: sending entire repo"
+            git ls-files | while read file; do
+              if [ -f "$file" ]; then
+                ext="${file##*.}"
+                size=$(wc -c <"$file")
+                if echo "$EXTENSIONS" | grep -qw "$ext" && [ "$size" -le 500000 ]; then
+                  echo "----- FILE: $file -----" >> input.txt
+                  cat "$file" >> input.txt || true
+                  echo "" >> input.txt
+                else
+                  echo "⚠️ Skipping irrelevant/large file: $file ($size bytes)"
+                fi
+              fi
+            done
+          else
+            echo "📌 Sending only modified files (diff)"
+            git diff --name-only HEAD~1 HEAD > modified_files.txt
+            while read file; do
+              if [ -f "$file" ]; then
+                ext="${file##*.}"
+                size=$(wc -c <"$file")
+                if echo "$EXTENSIONS" | grep -qw "$ext" && [ "$size" -le 500000 ]; then
+                  echo "----- FILE: $file -----" >> input.txt
+                  git diff HEAD~1 HEAD -- "$file" >> input.txt
+                  echo "" >> input.txt
+                else
+                  echo "⚠️ Skipping irrelevant/large file: $file ($size bytes)"
+                fi
+              fi
+            done < modified_files.txt
+          fi
+
+      - name: Chunk and send to GPT
         run: |
           python - <<'PY'
-          import os, time
+          import os, time, json
           from pathlib import Path
           import openai
           try:
@@ -55,22 +80,19 @@ jobs:
           except Exception:
               tiktoken = None
 
-          model = os.environ.get('MODEL', 'gpt-5-mini')
-          api_key = os.environ.get('OPENAI_API_KEY')
-          input_path = os.environ.get('INPUT_FILE', 'input.txt')
-          max_tokens = int(os.environ.get('MAX_TOKENS_PER_CHUNK', '1000'))
-          temperature = float(os.environ.get('TEMPERATURE', '0.0'))
+          model = os.environ.get("MODEL", "gpt-5-mini")
+          api_key = os.environ.get("OPENAI_API_KEY")
+          max_tokens = int(os.environ.get("MAX_TOKENS_PER_CHUNK", "1000"))
+          temperature = float(os.environ.get("TEMPERATURE", "1.0"))
+          input_path = "input.txt"
 
           openai.api_key = api_key
           p = Path(input_path)
-          if not p.exists():
-              raise SystemExit(f"❌ Input file not found: {input_path}")
-
-          # leitura robusta (ignora erros de encoding)
-          text = p.read_text(encoding='utf-8', errors='ignore')
-          if not text.strip():
+          if not p.exists() or p.stat().st_size == 0:
               print("⚠️ Nothing to send, skipping.")
               raise SystemExit(0)
+
+          text = p.read_text(encoding="utf-8", errors="ignore")
 
           # encoding para contar tokens
           encoding = None
@@ -78,7 +100,7 @@ jobs:
               try:
                   encoding = tiktoken.encoding_for_model(model)
               except Exception:
-                  encoding = tiktoken.get_encoding('cl100k_base')
+                  encoding = tiktoken.get_encoding("cl100k_base")
 
           def split_by_tokens(s: str, max_toks: int):
               if encoding:
@@ -95,12 +117,22 @@ jobs:
               try:
                   resp = openai.chat.completions.create(
                       model=model,
-                      messages=[{"role": "user", "content": chunk}],
+                      messages=[
+                          {"role": "system", "content": "Você é uma assistente de programação experiente. Sempre responda apenas em JSON válido com chaves: status, mensagem, acao."},
+                          {"role": "user", "content": chunk}
+                      ],
                       temperature=temperature
                   )
                   output = resp.choices[0].message.content
-                  print(f"✅ Response {i}: {output[:200]}...\n")
+                  try:
+                      data = json.loads(output)
+                  except Exception:
+                      data = {"status":"erro","mensagem":output,"acao":""}
+                  out_file = f"responses/resp_{i}.json"
+                  with open(out_file, "w", encoding="utf-8") as f:
+                      json.dump(data, f, ensure_ascii=False, indent=2)
+                  print(f"✅ Response {i} saved to {out_file}")
               except Exception as e:
                   print(f"❌ Error on chunk {i}: {e}")
-              time.sleep(10)
+              time.sleep(5)
           PY
