@@ -84,6 +84,9 @@ jobs:
                   resp = openai.ChatCompletion.create(
                       model=model,
                       messages=[{"role": "user", "content": chunk}],
+
+
+                      
                       temperature=temperature
                   )
                   output = resp.choices[0].message["content"]
