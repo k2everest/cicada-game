@@ -1,152 +1,73 @@
-name: Prompt Runner (Automatic with prompt:)
+name: Prompt Runner
 
 on:
   push:
     branches:
       - master
-  workflow_dispatch:
+      - main
 
 jobs:
-  run_prompt:
-    if: contains(github.event.head_commit.message, 'prompt:')
+  run-prompt:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      MODEL: gpt-5-mini
-      MAX_TOKENS_PER_CHUNK: '1000'
+    if: "contains(github.event.head_commit.message, 'prompt:')"
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: 3.11
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install --no-cache-dir openai tiktoken
+          pip install openai==1.45.0 pygit2
 
       - name: Extract prompt from commit message
-        id: prompt
+        id: extract
         run: |
-          msg="${{ github.event.head_commit.message }}"
-          prompt=$(echo "$msg" | sed -n 's/.*prompt:[[:space:]]*//p')
-          echo "🧠 Prompt detected: $prompt"
-          echo "PROMPT=$prompt" >> $GITHUB_ENV
+          PROMPT=$(echo "${{ github.event.head_commit.message }}" | sed -n 's/.*prompt://p' | xargs)
+          echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
 
-      - name: Detect changed files
-        id: diff
-        run: |
-          mkdir -p responses
-          if [ ! -f .context_initialized.flag ]; then
-            echo "📌 First run: sending entire repo"
-            find . -type f ! -path "./.git/*" ! -path "./responses/*" ! -path "./.github/*" -print > modified_files.txt
-            touch .context_initialized.flag
-          else
-            git fetch --depth=2
-            if git rev-parse HEAD~1 >/dev/null 2>&1; then
-              git diff --name-only HEAD~1 HEAD > modified_files.txt
-            else
-              echo "⚠️ No previous commit found, sending all files."
-              find . -type f ! -path "./.git/*" ! -path "./responses/*" ! -path "./.github/*" -print > modified_files.txt
-            fi
-          fi
-
-      - name: Build input context
-        run: |
-          TMP_FILE=$(mktemp)
-          echo "📑 Building context..."
-          while read file; do
-            if [ -f "$file" ]; then
-              SIZE=$(stat -c%s "$file")
-              if [ "$SIZE" -gt 500000 ]; then
-                echo "⚠️ Skipping large file: $file ($SIZE bytes)"
-                continue
-              fi
-              echo "----- FILE: $file -----" >> "$TMP_FILE"
-              cat "$file" >> "$TMP_FILE"
-              echo "\n" >> "$TMP_FILE"
-            fi
-          done < modified_files.txt
-          echo "----- PROMPT -----" >> "$TMP_FILE"
-          echo "$PROMPT" >> "$TMP_FILE"
-          mv "$TMP_FILE" input.txt
-
-      - name: Send to GPT-5-mini
+      - name: Run AI code generation
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python - <<'PY'
-          import os, json, time
-          from pathlib import Path
+          import os, json, subprocess
           from openai import OpenAI
-          try:
-              import tiktoken
-          except Exception:
-              tiktoken = None
 
+          prompt = os.environ.get("PROMPT", "").strip()
+          if not prompt:
+              print("⚠️ No prompt found, skipping.")
+              exit(0)
+
+          print(f"🧠 Running model on prompt: {prompt}")
           client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-          model = os.environ.get("MODEL", "gpt-5-mini")
-          input_path = Path("input.txt")
-          if not input_path.exists():
-              raise SystemExit("❌ input.txt not found.")
 
-          text = input_path.read_text(errors='ignore')
+          # Envia prompt ao GPT-5-mini
+          response = client.chat.completions.create(
+              model="gpt-5-mini",
+              messages=[
+                  {"role": "system", "content": "Você é um assistente de programação. Responda apenas com código e formato JSON válido."},
+                  {"role": "user", "content": prompt}
+              ],
+          )
 
-          # tokenizador
-          if tiktoken:
-              try:
-                  enc = tiktoken.encoding_for_model(model)
-              except Exception:
-                  enc = tiktoken.get_encoding('cl100k_base')
-          else:
-              enc = None
+          reply = response.choices[0].message.content.strip()
+          print("✅ AI response received")
 
-          def tokenize_len(s): return len(enc.encode(s)) if enc else len(s)//4
-          def chunk_text(s, max_toks):
-              if enc:
-                  ids = enc.encode(s)
-                  return [enc.decode(ids[i:i+max_toks]) for i in range(0, len(ids), max_toks)]
-              return [s[i:i+(max_toks*4)] for i in range(0, len(s), max_toks*4)]
+          os.makedirs("responses", exist_ok=True)
+          with open("responses/ai_response.json", "w", encoding="utf-8") as f:
+              f.write(reply)
 
-          chunks = chunk_text(text, int(os.environ.get("MAX_TOKENS_PER_CHUNK", "1000")))
-          print(f"🚀 Sending {len(chunks)} chunks...")
-
-          Path("responses").mkdir(exist_ok=True)
-          full_response = ""
-
-          for i, chunk in enumerate(chunks, 1):
-              print(f"--- Sending chunk {i}/{len(chunks)} ---")
-              try:
-                  resp = client.chat.completions.create(
-                      model=model,
-                      messages=[
-                          {"role": "system", "content": "You are a programming assistant integrated with GitHub Actions. Respond only in JSON describing code edits."},
-                          {"role": "user", "content": chunk}
-                      ]
-                  )
-                  out = resp.choices[0].message.content.strip()
-                  Path(f"responses/chunk_{i:04d}.json").write_text(out, encoding='utf-8')
-                  full_response += out + "\n"
-                  time.sleep(0.5)
-              except Exception as e:
-                  print(f"❌ Error on chunk {i}: {e}")
-
-          Path("responses/full_response.json").write_text(full_response, encoding='utf-8')
-          print("✅ Done.")
           PY
 
-      - name: Commit responses
+      - name: Commit and push changes
         run: |
-          git config --global user.name "Prompt Runner Bot"
-          git config --global user.email "bot@github.actions"
-          git add responses/*.json || true
-          if git diff --cached --quiet; then
-            echo "🟡 No changes to commit."
-          else
-            git commit -m "🤖 prompt: GPT-5-mini output for '${{ env.PROMPT }}'"
-            git push
-          fi
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git add responses/ai_response.json
+          git commit -m "🤖 AI update from prompt"
+          git push
