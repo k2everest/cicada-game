@@ -1,6 +1,5 @@
 name: Prompt Runner
 
-
 on:
   push:
     branches:
@@ -13,62 +12,44 @@ jobs:
     if: "contains(github.event.head_commit.message, 'prompt:')"
 
     steps:
-      - name: Checkout repo
+      - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: 3.11
 
-      - name: Install dependencies
+      - name: 📦 Install dependencies
         run: |
-          pip install openai==1.45.0 pygit2
+          pip install openai==1.45.0
 
-      - name: Extract prompt from commit message
+      - name: 🧠 Extract prompt from commit message
         id: extract
         run: |
           PROMPT=$(echo "${{ github.event.head_commit.message }}" | sed -n 's/.*prompt://p' | xargs)
           echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
+          echo "🧠 Prompt extraído: $PROMPT"
 
-      - name: Run AI code generation
+      - name: 🤖 Run AI code generation
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PROMPT: ${{ steps.extract.outputs.prompt }}
         run: |
           python - <<'PY'
-          import os, json, subprocess
+          import os, json, re
           from openai import OpenAI
 
           prompt = os.environ.get("PROMPT", "").strip()
           if not prompt:
-              print("⚠️ No prompt found, skipping.")
+              print("⚠️ Nenhum prompt encontrado — saindo.")
               exit(0)
 
-          print(f"🧠 Running model on prompt: {prompt}")
-          client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+          print(f"📨 Prompt recebido: {prompt}")
 
-          # Envia prompt ao GPT-5-mini
+          client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
           response = client.chat.completions.create(
               model="gpt-5-mini",
               messages=[
-                  {"role": "system", "content": "Você é um assistente de programação. Responda apenas com código e formato JSON válido."},
-                  {"role": "user", "content": prompt}
-              ],
-          )
-
-          reply = response.choices[0].message.content.strip()
-          print("✅ AI response received")
-
-          os.makedirs("responses", exist_ok=True)
-          with open("responses/ai_response.json", "w", encoding="utf-8") as f:
-              f.write(reply)
-
-          PY
-
-      - name: Commit and push changes
-        run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "actions@github.com"
-          git add responses/ai_response.json
-          git commit -m "🤖 AI update from prompt"
-          git push
+                  {"role": "system", "content": (
+                      "Você é um assistente de programação que t
