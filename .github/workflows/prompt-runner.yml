@@ -12,31 +12,31 @@ jobs:
     if: "contains(github.event.head_commit.message, 'prompt:')"
 
     steps:
-      - name: 📥 Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: 🐍 Setup Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: 3.11
 
-      - name: 📦 Install dependencies
+      - name: Install dependencies
         run: |
           pip install openai==1.45.0
 
-      - name: 🧠 Extract prompt from commit message
+      - name: Extract prompt from commit message
         id: extract
         run: |
           PROMPT=$(echo "${{ github.event.head_commit.message }}" | sed -n 's/.*prompt://p' | xargs)
           echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
-          echo "🧠 Prompt extraído: $PROMPT"
+          echo "Prompt extraído: $PROMPT"
 
-      - name: 🤖 Run AI code generation
+      - name: Run AI code generation
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PROMPT: ${{ steps.extract.outputs.prompt }}
         run: |
-          python - <<'PY'
+python - <<'PY'
 import os, json
 from openai import OpenAI
 
@@ -44,8 +44,6 @@ prompt = os.environ.get("PROMPT", "").strip()
 if not prompt:
     print("⚠️ Nenhum prompt encontrado — saindo.")
     exit(0)
-
-print(f"📨 Prompt recebido: {prompt}")
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 response = client.chat.completions.create(
@@ -56,28 +54,6 @@ response = client.chat.completions.create(
             "content": """Você é um assistente de programação que trabalha em GitHub Actions.
 Recebe um prompt e gera código em resposta.
 Responda sempre em formato JSON.
-Se o prompt mencionar um nome de arquivo, inclua no JSON a chave 'filename'
-e o conteúdo do arquivo na chave 'content'."""
+Se o prompt mencionar um nome de arquivo, inclua 'filename' e 'content'."""
         },
         {"role": "user", "content": prompt}
-    ]
-)
-
-reply = response.choices[0].message.content.strip()
-if not reply:
-    print("⚠️ Resposta vazia da IA — saindo.")
-    exit(0)
-
-print("✅ Resposta recebida da IA.")
-os.makedirs("responses", exist_ok=True)
-
-# Salva resposta bruta
-with open("responses/ai_response.json", "w", encoding="utf-8") as f:
-    f.write(reply)
-
-# Se houver filename/content no JSON, grava o arquivo real
-try:
-    data = json.loads(reply)
-    if isinstance(data, dict) and "filename" in data and "content" in data:
-        filename = data["filename"].strip()
-        content = data["content"]
