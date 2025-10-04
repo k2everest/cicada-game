@@ -1,5 +1,4 @@
-name: Prompt Runner
-
+name: Prompt Runner Ultra (Incremental + Parallel)
 
 on:
   push:
@@ -23,7 +22,7 @@ jobs:
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       MODEL: gpt-5-mini
-      MAX_TOKENS_PER_CHUNK: '1500'
+      MAX_TOKENS_PER_CHUNK: '8000'
 
     steps:
       - name: Checkout repository
@@ -39,53 +38,72 @@ jobs:
           python -m pip install --upgrade pip
           pip install --no-cache-dir openai tiktoken
 
-      - name: Prepare input (full repo first run, diff afterwards)
+      - name: Prepare input incrementally
         run: |
           mkdir -p responses
+          touch responses/state.json
           echo "" > input.txt
           EXTENSIONS="py js ts java yml yaml json md sh txt"
 
-          if [ ! -f responses/.first_run_done ]; then
-            echo "📌 First run: sending entire repo"
-            git ls-files > modified_files.txt
-            touch responses/.first_run_done
-          else
-            if [ "$(git rev-list --count HEAD)" -gt 1 ]; then
-              echo "📌 Sending only modified files (diff)"
-              git diff --name-only HEAD~1 HEAD > modified_files.txt
-            else
-              echo "📌 Only one commit found, sending all files"
-              git ls-files > modified_files.txt
-            fi
-          fi
+          echo "📦 Preparing incremental input..."
+          python - <<'PY'
+          import json, hashlib, os
+          from pathlib import Path
 
+          state_file = Path("responses/state.json")
+          state = json.loads(state_file.read_text()) if state_file.exists() and state_file.stat().st_size else {}
+          new_state = {}
+          changed_files = []
+
+          def sha1(path):
+              h = hashlib.sha1()
+              with open(path, "rb") as f:
+                  while chunk := f.read(8192):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          exts = {"py","js","ts","java","yml","yaml","json","md","sh","txt"}
+          for path in Path(".").rglob("*"):
+              if path.is_file() and path.suffix.lstrip(".") in exts and path.stat().st_size <= 800000:
+                  h = sha1(path)
+                  new_state[str(path)] = h
+                  if state.get(str(path)) != h:
+                      changed_files.append(str(path))
+
+          if not state:
+              print("📌 First run — including all files.")
+              changed_files = list(new_state.keys())
+          else:
+              print(f"📁 {len(changed_files)} files changed since last run.")
+
+          with open("modified_files.txt", "w") as f:
+              f.write("\n".join(changed_files))
+
+          with open("responses/new_state.json", "w") as f:
+              json.dump(new_state, f)
+          PY
+
+      - name: Build grouped input
+        run: |
+          echo "" > input.txt
+          GROUP_SIZE=10000  # approx tokens per group
+          CURRENT=0
+          echo "📑 Building grouped input..."
           while read file; do
             if [ -f "$file" ]; then
-              ext="${file##*.}"
-              size=$(wc -c <"$file")
-              if echo "$EXTENSIONS" | grep -qw "$ext" && [ "$size" -le 500000 ]; then
-                echo "----- FILE: $file -----" >> input.txt
-                if [ -f responses/.first_run_done ]; then
-                  if [ "$(git rev-list --count HEAD)" -gt 1 ]; then
-                    git diff HEAD~1 HEAD -- "$file" >> input.txt
-                  else
-                    cat "$file" >> input.txt
-                  fi
-                else
-                  cat "$file" >> input.txt
-                fi
-                echo "" >> input.txt
-              else
-                echo "⚠️ Skipping irrelevant/large file: $file ($size bytes)"
-              fi
+              echo "----- FILE: $file -----" >> input.txt
+              cat "$file" >> input.txt
+              echo "\n" >> input.txt
             fi
           done < modified_files.txt
+          echo "✅ Input built."
 
-      - name: Chunk file and send to OpenAI
+      - name: Chunk file and send to OpenAI (parallel)
         run: |
           python - <<'PY'
-          import os, time, json
+          import os, json, time, hashlib
           from pathlib import Path
+          from concurrent.futures import ThreadPoolExecutor, as_completed
           from openai import OpenAI
           try:
               import tiktoken
@@ -94,15 +112,11 @@ jobs:
 
           client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
           model = os.environ.get("MODEL", "gpt-5-mini")
-          max_tokens = int(os.environ.get("MAX_TOKENS_PER_CHUNK", "1500"))
+          max_tokens = int(os.environ.get("MAX_TOKENS_PER_CHUNK", "8000"))
 
           input_path = Path("input.txt")
-          if not input_path.exists():
-              raise SystemExit("❌ input.txt not found")
-
           text = input_path.read_bytes().decode("utf-8", errors="ignore")
 
-          # Encoding
           encoding = None
           if tiktoken:
               try:
@@ -120,22 +134,33 @@ jobs:
           chunks = split_by_tokens(text, max_tokens)
           print(f"📌 Total chunks: {len(chunks)}")
 
-          for i, chunk in enumerate(chunks, 1):
-              print(f"\n--- Sending chunk {i}/{len(chunks)} ---")
+          Path("responses/chunks").mkdir(exist_ok=True)
+
+          def process_chunk(i, chunk):
               try:
                   resp = client.chat.completions.create(
                       model=model,
                       messages=[
-                          {"role": "system", "content": "You are a programming assistant integrated with GitHub Actions. Always answer in strict JSON."},
+                          {"role": "system", "content": "You are a programming assistant integrated with GitHub Actions. Always answer strictly in JSON."},
                           {"role": "user", "content": chunk}
                       ]
                   )
                   output = resp.choices[0].message.content
-                  out_file = Path("responses") / f"response_{i}.json"
-                  with out_file.open("w", encoding="utf-8") as f:
-                      f.write(output)
-                  print(f"✅ Saved response {i} -> {out_file}")
+                  out_file = Path("responses/chunks") / f"chunk_{i}.json"
+                  out_file.write_text(output, encoding="utf-8")
+                  return (i, "ok")
               except Exception as e:
-                  print(f"❌ Error on chunk {i}: {e}")
-              time.sleep(3)
+                  return (i, str(e))
+
+          with ThreadPoolExecutor(max_workers=4) as executor:
+              futures = [executor.submit(process_chunk, i, chunk) for i, chunk in enumerate(chunks, 1)]
+              for fut in as_completed(futures):
+                  i, status = fut.result()
+                  print(f"✅ Chunk {i} done" if status == "ok" else f"❌ Chunk {i} error: {status}")
+                  time.sleep(1)
           PY
+
+      - name: Merge results and update state
+        run: |
+          echo "🧩 Merging chunk results..."
+          python - <<'PY
