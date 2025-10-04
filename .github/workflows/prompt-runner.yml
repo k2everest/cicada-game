@@ -1,29 +1,24 @@
-name: Prompt Runner Ultra (Incremental + Parallel)
+name: Prompt Runner (Smart Diff & Chunked Send)
 
 on:
   push:
     branches:
       - master
-      
-    paths:
-      - '**.py'
-      - '**.js'
-      - '**.ts'
-      - '**.java'
-      - '**.yml'
-      - '**.yaml'
-      - '**.json'
-      - '**.md'
-      - '**.sh'
-      - '**.txt'
+    paths-ignore:
+      - 'responses/**'
+      - '.github/**'
+  workflow_dispatch:
 
 jobs:
-  run-prompt:
+  run_prompt:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       MODEL: gpt-5-mini
-      MAX_TOKENS_PER_CHUNK: '8000'
+      MAX_TOKENS_PER_CHUNK: '1000'
+      TEMPERATURE: '1.0'
 
     steps:
       - name: Checkout repository
@@ -39,129 +34,122 @@ jobs:
           python -m pip install --upgrade pip
           pip install --no-cache-dir openai tiktoken
 
-      - name: Prepare input incrementally
+      - name: Detect changed files
+        id: diff
         run: |
           mkdir -p responses
-          touch responses/state.json
-          echo "" > input.txt
-          EXTENSIONS="py js ts java yml yaml json md sh txt"
-
-          echo "📦 Preparing incremental input..."
-          python - <<'PY'
-          import json, hashlib, os
-          from pathlib import Path
-
-          state_file = Path("responses/state.json")
-          state = json.loads(state_file.read_text()) if state_file.exists() and state_file.stat().st_size else {}
-          new_state = {}
-          changed_files = []
-
-          def sha1(path):
-              h = hashlib.sha1()
-              with open(path, "rb") as f:
-                  while chunk := f.read(8192):
-                      h.update(chunk)
-              return h.hexdigest()
-
-          exts = {"py","js","ts","java","yml","yaml","json","md","sh","txt"}
-          for path in Path(".").rglob("*"):
-              if path.is_file() and path.suffix.lstrip(".") in exts and path.stat().st_size <= 800000:
-                  h = sha1(path)
-                  new_state[str(path)] = h
-                  if state.get(str(path)) != h:
-                      changed_files.append(str(path))
-
-          if not state:
-              print("📌 First run — including all files.")
-              changed_files = list(new_state.keys())
-          else:
-              print(f"📁 {len(changed_files)} files changed since last run.")
-
-          with open("modified_files.txt", "w") as f:
-              f.write("\n".join(changed_files))
-
-          with open("responses/new_state.json", "w") as f:
-              json.dump(new_state, f)
-          PY
+          if [ ! -f .context_initialized.flag ]; then
+            echo "📌 First run: sending entire repo"
+            find . -type f ! -path "./.git/*" ! -path "./responses/*" ! -path "./.github/*" -print > modified_files.txt
+            touch .context_initialized.flag
+          else
+            git fetch --depth=2
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              git diff --name-only HEAD~1 HEAD > modified_files.txt
+            else
+              echo "⚠️ No previous commit found, sending all files."
+              find . -type f ! -path "./.git/*" ! -path "./responses/*" ! -path "./.github/*" -print > modified_files.txt
+            fi
+          fi
 
       - name: Build grouped input
         run: |
-          echo "" > input.txt
-          GROUP_SIZE=10000  # approx tokens per group
-          CURRENT=0
+          TMP_FILE=$(mktemp)
+          GROUP_SIZE=10000
           echo "📑 Building grouped input..."
           while read file; do
             if [ -f "$file" ]; then
-              echo "----- FILE: $file -----" >> input.txt
-              cat "$file" >> input.txt
-              echo "\n" >> input.txt
+              SIZE=$(stat -c%s "$file")
+              if [ "$SIZE" -gt 1000000 ]; then
+                echo "⚠️ Skipping large file: $file ($SIZE bytes)"
+                continue
+              fi
+              echo "----- FILE: $file -----" >> "$TMP_FILE"
+              cat "$file" >> "$TMP_FILE"
+              echo "\n" >> "$TMP_FILE"
             fi
           done < modified_files.txt
+          mv "$TMP_FILE" input.txt
           echo "✅ Input built."
 
-      - name: Chunk file and send to OpenAI (parallel)
+      - name: Chunk and send to GPT
         run: |
           python - <<'PY'
-          import os, json, time, hashlib
+          import os, json, time
           from pathlib import Path
-          from concurrent.futures import ThreadPoolExecutor, as_completed
           from openai import OpenAI
           try:
               import tiktoken
-          except ImportError:
+          except Exception:
               tiktoken = None
 
-          client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-          model = os.environ.get("MODEL", "gpt-5-mini")
-          max_tokens = int(os.environ.get("MAX_TOKENS_PER_CHUNK", "8000"))
+          model = os.environ.get('MODEL', 'gpt-5-mini')
+          api_key = os.environ.get('OPENAI_API_KEY')
+          max_tokens = int(os.environ.get('MAX_TOKENS_PER_CHUNK', '1000'))
+          temperature = float(os.environ.get('TEMPERATURE', '1.0'))
 
+          client = OpenAI(api_key=api_key)
           input_path = Path("input.txt")
-          text = input_path.read_bytes().decode("utf-8", errors="ignore")
+          if not input_path.exists():
+              raise SystemExit("❌ input.txt not found.")
+
+          text = input_path.read_text(errors='ignore')
 
           encoding = None
           if tiktoken:
               try:
                   encoding = tiktoken.encoding_for_model(model)
               except Exception:
-                  encoding = tiktoken.get_encoding("cl100k_base")
+                  encoding = tiktoken.get_encoding('cl100k_base')
 
-          def split_by_tokens(s: str, max_toks: int):
-              if encoding:
-                  ids = encoding.encode(s)
-                  return [encoding.decode(ids[i:i+max_toks]) for i in range(0, len(ids), max_toks)]
-              else:
-                  return [s[i:i+max_toks*4] for i in range(0, len(s), max_toks*4)]
+          def estimate_tokens(s):
+              return len(encoding.encode(s)) if encoding else max(1, len(s)//4)
 
-          chunks = split_by_tokens(text, max_tokens)
-          print(f"📌 Total chunks: {len(chunks)}")
+          def chunk_text(text, max_tokens):
+              parts, current, current_tokens = [], [], 0
+              for line in text.splitlines(keepends=True):
+                  lt = estimate_tokens(line)
+                  if current_tokens + lt > max_tokens:
+                      parts.append("".join(current))
+                      current, current_tokens = [line], lt
+                  else:
+                      current.append(line)
+                      current_tokens += lt
+              if current:
+                  parts.append("".join(current))
+              return parts
 
-          Path("responses/chunks").mkdir(exist_ok=True)
+          chunks = chunk_text(text, max_tokens)
+          print(f"🚀 Sending {len(chunks)} chunks...")
 
-          def process_chunk(i, chunk):
+          Path("responses").mkdir(exist_ok=True)
+
+          for i, chunk in enumerate(chunks, 1):
+              print(f"--- Sending chunk {i}/{len(chunks)} ---")
               try:
-                  resp = client.chat.completions.create(
+                  response = client.chat.completions.create(
                       model=model,
                       messages=[
-                          {"role": "system", "content": "You are a programming assistant integrated with GitHub Actions. Always answer strictly in JSON."},
+                          {"role": "system", "content": "You are a programming assistant integrated with GitHub Actions. Respond only in valid JSON."},
                           {"role": "user", "content": chunk}
                       ]
                   )
-                  output = resp.choices[0].message.content
-                  out_file = Path("responses/chunks") / f"chunk_{i}.json"
-                  out_file.write_text(output, encoding="utf-8")
-                  return (i, "ok")
+                  reply = response.choices[0].message.content.strip()
+                  Path(f"responses/chunk_{i:04d}.json").write_text(reply, encoding="utf-8")
+                  time.sleep(0.5)
               except Exception as e:
-                  return (i, str(e))
-
-          with ThreadPoolExecutor(max_workers=4) as executor:
-              futures = [executor.submit(process_chunk, i, chunk) for i, chunk in enumerate(chunks, 1)]
-              for fut in as_completed(futures):
-                  i, status = fut.result()
-                  print(f"✅ Chunk {i} done" if status == "ok" else f"❌ Chunk {i} error: {status}")
-                  time.sleep(1)
+                  print(f"❌ Error on chunk {i}: {e}")
+          print("✅ All chunks processed.")
           PY
 
-      - name: Merge results and update state
+      - name: Commit responses
         run: |
-          echo "🧩 Merging chunk results..."
-          python - <<'PY
+          git config --global user.name "Prompt Runner Bot"
+          git config --global user.email "bot@github.actions"
+          git add responses/*.json || true
+          if git diff --cached --quiet; then
+            echo "🟡 No new responses to commit."
+          else
+            git commit -m "🤖 prompt: update responses"
+            git push
+          fi
