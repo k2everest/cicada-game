@@ -5,7 +5,6 @@ on:
     branches:
       - master
       - main
-      
 
 jobs:
   run-prompt:
@@ -41,4 +40,4 @@ jobs:
           import os, json
           from openai import OpenAI
 
-          prompt = os.envi
+          prompt = os.environ.get("PROMPT", "").st
