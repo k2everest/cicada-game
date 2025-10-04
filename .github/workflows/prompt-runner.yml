@@ -5,7 +5,6 @@ on:
     branches:
       - master
       - main
-      
 
 jobs:
   run-prompt:
@@ -41,4 +40,16 @@ jobs:
           import os, json
           from openai import OpenAI
 
-          prompt = os.environ.get("PROMPT", "").st
+          # ✅ Corrigido: uso de strip()
+          prompt = os.environ.get("PROMPT", "").strip()
+          if not prompt:
+              print("⚠️ Nenhum prompt encontrado — saindo.")
+              exit(0)
+
+          print(f"📨 Prompt recebido: {prompt}")
+
+          client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+          response = client.chat.completions.create(
+              model="gpt-5-mini",
+              messages=[
+                  {"role": "system",
