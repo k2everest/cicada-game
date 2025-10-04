@@ -1,17 +1,14 @@
-name: Prompt Runner (Smart Diff & Chunked Send)
+name: Prompt Runner (Automatic with prompt:)
 
 on:
   push:
     branches:
       - master
-      
-    paths-ignore:
-      - 'responses/**'
-      - '.github/**'
   workflow_dispatch:
 
 jobs:
   run_prompt:
+    if: contains(github.event.head_commit.message, 'prompt:')
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -19,7 +16,6 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       MODEL: gpt-5-mini
       MAX_TOKENS_PER_CHUNK: '1000'
-      TEMPERATURE: '1.0'
 
     steps:
       - name: Checkout repository
@@ -34,6 +30,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --no-cache-dir openai tiktoken
+
+      - name: Extract prompt from commit message
+        id: prompt
+        run: |
+          msg="${{ github.event.head_commit.message }}"
+          prompt=$(echo "$msg" | sed -n 's/.*prompt:[[:space:]]*//p')
+          echo "🧠 Prompt detected: $prompt"
+          echo "PROMPT=$prompt" >> $GITHUB_ENV
 
       - name: Detect changed files
         id: diff
@@ -53,15 +57,14 @@ jobs:
             fi
           fi
 
-      - name: Build grouped input
+      - name: Build input context
         run: |
           TMP_FILE=$(mktemp)
-          GROUP_SIZE=10000
-          echo "📑 Building grouped input..."
+          echo "📑 Building context..."
           while read file; do
             if [ -f "$file" ]; then
               SIZE=$(stat -c%s "$file")
-              if [ "$SIZE" -gt 1000000 ]; then
+              if [ "$SIZE" -gt 500000 ]; then
                 echo "⚠️ Skipping large file: $file ($SIZE bytes)"
                 continue
               fi
@@ -70,10 +73,11 @@ jobs:
               echo "\n" >> "$TMP_FILE"
             fi
           done < modified_files.txt
+          echo "----- PROMPT -----" >> "$TMP_FILE"
+          echo "$PROMPT" >> "$TMP_FILE"
           mv "$TMP_FILE" input.txt
-          echo "✅ Input built."
 
-      - name: Chunk and send to GPT
+      - name: Send to GPT-5-mini
         run: |
           python - <<'PY'
           import os, json, time
@@ -84,63 +88,55 @@ jobs:
           except Exception:
               tiktoken = None
 
-          model = os.environ.get('MODEL', 'gpt-5-mini')
-          api_key = os.environ.get('OPENAI_API_KEY')
-          max_tokens = int(os.environ.get('MAX_TOKENS_PER_CHUNK', '1000'))
-          temperature = float(os.environ.get('TEMPERATURE', '1.0'))
-
-          client = OpenAI(api_key=api_key)
+          client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+          model = os.environ.get("MODEL", "gpt-5-mini")
           input_path = Path("input.txt")
           if not input_path.exists():
               raise SystemExit("❌ input.txt not found.")
 
           text = input_path.read_text(errors='ignore')
 
-          encoding = None
+          # tokenizador
           if tiktoken:
               try:
-                  encoding = tiktoken.encoding_for_model(model)
+                  enc = tiktoken.encoding_for_model(model)
               except Exception:
-                  encoding = tiktoken.get_encoding('cl100k_base')
+                  enc = tiktoken.get_encoding('cl100k_base')
+          else:
+              enc = None
 
-          def estimate_tokens(s):
-              return len(encoding.encode(s)) if encoding else max(1, len(s)//4)
+          def tokenize_len(s): return len(enc.encode(s)) if enc else len(s)//4
+          def chunk_text(s, max_toks):
+              if enc:
+                  ids = enc.encode(s)
+                  return [enc.decode(ids[i:i+max_toks]) for i in range(0, len(ids), max_toks)]
+              return [s[i:i+(max_toks*4)] for i in range(0, len(s), max_toks*4)]
 
-          def chunk_text(text, max_tokens):
-              parts, current, current_tokens = [], [], 0
-              for line in text.splitlines(keepends=True):
-                  lt = estimate_tokens(line)
-                  if current_tokens + lt > max_tokens:
-                      parts.append("".join(current))
-                      current, current_tokens = [line], lt
-                  else:
-                      current.append(line)
-                      current_tokens += lt
-              if current:
-                  parts.append("".join(current))
-              return parts
-
-          chunks = chunk_text(text, max_tokens)
+          chunks = chunk_text(text, int(os.environ.get("MAX_TOKENS_PER_CHUNK", "1000")))
           print(f"🚀 Sending {len(chunks)} chunks...")
 
           Path("responses").mkdir(exist_ok=True)
+          full_response = ""
 
           for i, chunk in enumerate(chunks, 1):
               print(f"--- Sending chunk {i}/{len(chunks)} ---")
               try:
-                  response = client.chat.completions.create(
+                  resp = client.chat.completions.create(
                       model=model,
                       messages=[
-                          {"role": "system", "content": "You are a programming assistant integrated with GitHub Actions. Respond only in valid JSON."},
+                          {"role": "system", "content": "You are a programming assistant integrated with GitHub Actions. Respond only in JSON describing code edits."},
                           {"role": "user", "content": chunk}
                       ]
                   )
-                  reply = response.choices[0].message.content.strip()
-                  Path(f"responses/chunk_{i:04d}.json").write_text(reply, encoding="utf-8")
+                  out = resp.choices[0].message.content.strip()
+                  Path(f"responses/chunk_{i:04d}.json").write_text(out, encoding='utf-8')
+                  full_response += out + "\n"
                   time.sleep(0.5)
               except Exception as e:
                   print(f"❌ Error on chunk {i}: {e}")
-          print("✅ All chunks processed.")
+
+          Path("responses/full_response.json").write_text(full_response, encoding='utf-8')
+          print("✅ Done.")
           PY
 
       - name: Commit responses
@@ -149,8 +145,8 @@ jobs:
           git config --global user.email "bot@github.actions"
           git add responses/*.json || true
           if git diff --cached --quiet; then
-            echo "🟡 No new responses to commit."
+            echo "🟡 No changes to commit."
           else
-            git commit -m "🤖 prompt: update responses"
+            git commit -m "🤖 prompt: GPT-5-mini output for '${{ env.PROMPT }}'"
             git push
           fi
