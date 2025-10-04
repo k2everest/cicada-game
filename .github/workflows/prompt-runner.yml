@@ -14,6 +14,16 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v3
 
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir openai tiktoken jq
+
       - name: Extrair prompt do commit
         id: get-prompt
         run: |
@@ -24,88 +34,10 @@ jobs:
       - name: Preparar contexto do repositório
         id: get-context
         run: |
+          set -e
+          # snapshot inicial
           if [ ! -f .context_initialized.flag ]; then
             find . -type f \
               -not -path "./.git/*" \
               -not -path "./node_modules/*" \
-              \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \) \
-              -exec sh -c 'echo "==== $1 ===="; tr -d "\000" < "$1"' _ {} \; > full_context.txt
-            touch .context_initialized.flag
-            git config user.name "prompt-bot"
-            git config user.email "bot@example.com"
-            git add .context_initialized.flag
-            git commit -m "Initialize context snapshot" || echo "Flag já existe"
-            git push origin master
-          else
-            if git rev-parse HEAD~1 >/dev/null 2>&1; then
-              FILES=$(git diff --name-only HEAD~1 HEAD)
-            else
-              FILES=$(git ls-files)
-            fi
-
-            CONTEXT=""
-            for F in $FILES; do
-              if [[ -f "$F" ]]; then
-                CONTEXT+="==== $F ====\n"
-                CONTEXT+=$(tr -d "\000" < "$F")
-                CONTEXT+="\n"
-              fi
-            done
-            echo -e "$CONTEXT" > full_context.txt
-
-      - name: Rodar ChatGPT com chunking
-        id: ai
-        run: |
-          MAX_CHARS=5000
-          mkdir -p chunks
-          split -C $MAX_CHARS full_context.txt chunks/chunk_
-
-          rm -f responses_temp.json
-          touch responses_temp.json
-
-          for CHUNK in chunks/*; do
-            RESPONSE=$(jq -n \
-              --arg prompt "${{ steps.get-prompt.outputs.prompt }}" \
-              --rawfile context "$CHUNK" \
-              '{
-                model: "gpt-5",
-                messages: [
-                  {role: "system", content: "Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato: [{\"path\":\"arquivo.ext\",\"content\":\"novo conteúdo\"}]"},
-                  {role: "user", content: $context},
-                  {role: "user", content: $prompt}
-                ]
-              }' | curl -s https://api.openai.com/v1/chat/completions \
-                -H "Content-Type: application/json" \
-                -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
-                -d @- | jq -r '.choices[0].message.content')
-            
-            echo "$RESPONSE" >> responses_temp.json
-          done
-
-          # Combina todos os JSONs em um único array
-          jq -s add responses_temp.json > changes.json
-          cat changes.json
-
-      - name: Validar JSON
-        run: cat changes.json | jq empty
-
-      - name: Aplicar mudanças nos arquivos
-        run: |
-          cat changes.json | jq -c '.[]' | while read i; do
-            FILE=$(echo $i | jq -r '.path')
-            CONTENT=$(echo $i | jq -r '.content')
-            mkdir -p $(dirname "$FILE")
-            printf "%s" "$CONTENT" > "$FILE"
-          done
-
-      - name: Commit automático dos arquivos alterados
-        run: |
-          git config user.name "prompt-bot"
-          git config user.email "bot@example.com"
-          FILES_TO_COMMIT=$(jq -r '.[].path' changes.json | tr '\n' ' ')
-          if [ -n "$FILES_TO_COMMIT" ]; then
-            git add $FILES_TO_COMMIT
-            git commit -m "🤖 AI applied changes for prompt" || echo "Nada para commitar"
-            git push origin master
-          else
-            echo "⚠️ Nenhum arquivo modificado para commit."
+              \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html
