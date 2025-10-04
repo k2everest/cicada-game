@@ -6,3 +6,14 @@
     }
   ]
 }
+{
+  "updates": [
+    {
+      "path": "README.md",
+      "action": "create",
+      "encoding": "utf-8",
+      "content": "# Projeto de Execução de Prompt\n\nEste repositório contém um fluxo de trabalho do GitHub Actions que envia prompts para um modelo em partes (chunks) e salva as respostas em arquivos JSON dentro da pasta `responses/`.\n\n## Descrição\nO workflow divide um prompt grande em pedaços, chama a API do modelo para cada pedaço e escreve as respostas em `responses/chunk_XXXX.json`. Ao final, também salva um arquivo `responses/full_response.json` com a concatenação das respostas. O workflow pode fazer commit automático das respostas no repositório.\n\n## Como usar\n1. Configure as credenciais necessárias (por exemplo, variáveis de ambiente ou segredos do GitHub) conforme requerido pelo workflow.\n2. Defina o prompt (por exemplo, na variável de ambiente `PROMPT`) ou altere o script para ler o prompt de um arquivo.\n3. Dispare o workflow (por push, manualmente ou conforme a sua configuração) e verifique a pasta `responses/` para os arquivos gerados.\n\n## Estrutura principal\n- `.github/workflows/` - definições do GitHub Actions\n- `scripts/` (ou nome equivalente) - script Python que envia prompts ao modelo e grava respostas\n- `responses/` - pasta onde são salvos `chunk_XXXX.json` e `full_response.json`\n\n## Sugestões\n- Verifique se o commit automático usa uma conta-bot com permissões adequadas antes de ativá-lo em branches protegidos.\n- Adicione tratamento de erros e limites de taxa (rate limiting) no script se necessário.\n\n## Contribuindo\nSinta-se à vontade para abrir issues ou pull requests com melhorias.\n\n## Licença\nMIT\n"
+    }
+  ],
+  "commit_message": "chore: add README.md"
+}
