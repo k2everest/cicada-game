@@ -42,6 +42,7 @@ jobs:
             else
               FILES=$(git ls-files)
             fi
+
             CONTEXT=""
             for F in $FILES; do
               if [[ -f "$F" ]]; then
@@ -52,25 +53,37 @@ jobs:
             done
             echo -e "$CONTEXT" > full_context.txt
 
-      - name: Rodar ChatGPT (OpenAI API)
+      - name: Rodar ChatGPT com chunking
         id: ai
         run: |
-          RESPONSE=$(jq -n \
-            --arg prompt "${{ steps.get-prompt.outputs.prompt }}" \
-            --rawfile context full_context.txt \
-            '{
-              model: "gpt-5",
-              messages: [
-                {role: "system", content: "Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato: [{\"path\":\"arquivo.ext\",\"content\":\"novo conteúdo\"}]"},
-                {role: "user", content: $context},
-                {role: "user", content: $prompt}
-              ]
-            }' | curl -s https://api.openai.com/v1/chat/completions \
-              -H "Content-Type: application/json" \
-              -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
-              -d @- | jq -r '.choices[0].message.content')
-          
-          echo "$RESPONSE" > changes.json
+          MAX_CHARS=5000
+          mkdir -p chunks
+          split -C $MAX_CHARS full_context.txt chunks/chunk_
+
+          rm -f responses_temp.json
+          touch responses_temp.json
+
+          for CHUNK in chunks/*; do
+            RESPONSE=$(jq -n \
+              --arg prompt "${{ steps.get-prompt.outputs.prompt }}" \
+              --rawfile context "$CHUNK" \
+              '{
+                model: "gpt-5",
+                messages: [
+                  {role: "system", content: "Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato: [{\"path\":\"arquivo.ext\",\"content\":\"novo conteúdo\"}]"},
+                  {role: "user", content: $context},
+                  {role: "user", content: $prompt}
+                ]
+              }' | curl -s https://api.openai.com/v1/chat/completions \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
+                -d @- | jq -r '.choices[0].message.content')
+            
+            echo "$RESPONSE" >> responses_temp.json
+          done
+
+          # Combina todos os JSONs em um único array
+          jq -s add responses_temp.json > changes.json
           cat changes.json
 
       - name: Validar JSON
