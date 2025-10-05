@@ -6,7 +6,6 @@ on:
       - master
       - main
   workflow_dispatch:
-  
 
 jobs:
   run-prompt:
@@ -28,6 +27,12 @@ jobs:
         run: |
           COMMIT_MSG="${{ github.event.head_commit.message }}"
           PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p' | xargs)
+
+          # Se README.md não existir, instruir criação
+          if [ ! -f "README.md" ]; then
+            PROMPT="$PROMPT\n\nIMPORTANTE: Se README.md não existir, crie um novo README.md completo descrevendo o projeto."
+          fi
+
           echo "Prompt extraído: $PROMPT"
           echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
 
@@ -56,6 +61,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           echo "🚀 Executando prompt via GPT-5..."
+
+          # Payload JSON
           JSON_PAYLOAD=$(jq -n \
             --arg model "gpt-5" \
             --arg prompt "${{ steps.get-prompt.outputs.prompt }}" \
@@ -65,29 +72,36 @@ jobs:
               messages: [
                 {
                   "role": "system",
-                  "content": "Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato: [{\"path\":\"arquivo.ext\",\"content\":\"novo conteúdo\"}]"
+                  "content": "Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato: [{\"path\":\"arquivo.ext\",\"content\":\"novo conteúdo\"}]. Se README.md não existir, crie um completo descrevendo o projeto."
                 },
-                { "role": "user", "content": $context },
-                { "role": "user", "content": $prompt }
+                {"role": "user", "content": $context},
+                {"role": "user", "content": $prompt}
               ]
             }'
           )
 
-          echo "$JSON_PAYLOAD" | jq . > payload.json
+          echo "Payload JSON:"
+          echo "$JSON_PAYLOAD" | jq .
 
+          echo "$JSON_PAYLOAD" > payload.json
+
+          # Chamada da API
           RESPONSE=$(curl -s -X POST "https://api.openai.com/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $OPENAI_API_KEY" \
             -d @payload.json)
 
+          echo "Resposta crua da API:"
           echo "$RESPONSE" > response_raw.json
 
-          # Extrai o conteúdo do GPT garantindo JSON válido
-          jq -r '.choices[0].message.content' response_raw.json | tee changes.json
+          # Extrair conteúdo gerado pelo GPT
+          jq -r '.choices[0].message.content' response_raw.json > changes.json
+          echo "✅ Resposta salva em changes.json"
+          echo "Conteúdo de changes.json:"
+          cat changes.json
 
       - name: Validar JSON retornado
-        run: |
-          cat changes.json | jq empty
+        run: cat changes.json | jq empty
 
       - name: Aplicar mudanças
         run: |
