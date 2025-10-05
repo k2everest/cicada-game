@@ -1,0 +1,79 @@
+# Cicada Game
+
+Cicada Game é um projeto de jogo (web/mobile/desktop) — um protótipo interativo com foco em mecânicas de sobrevivência e exploração inspiradas nas cicadas. Este repositório contém o código-fonte, assets e scripts necessários para rodar o jogo localmente e para empacotar builds de produção.
+
+> Observação: adapte instruções abaixo conforme a stack real do projeto (por exemplo: Unity, Godot, Phaser, React, etc.). As instruções fornecidas são um ponto de partida genérico para projetos JavaScript/web.
+
+## Principais funcionalidades
+- Mecânica de exploração e coleta
+- Sistema de vida/energia e ciclos temporais
+- Arte e áudio básicos (substituíveis)
+- Estrutura preparada para extensões e melhorias
+
+## Pré-requisitos
+- Git
+- Node.js (v16+) e npm ou Yarn (se o projeto for web/JS)
+- Navegador moderno (para builds web) ou runtime correspondente (se for outra plataforma)
+
+## Instalação (exemplo para projeto web/JS)
+1. Clone o repositório:
+   git clone https://seu-repositorio.git
+   cd nome-do-repositorio
+
+2. Instale dependências:
+   npm install
+   # ou
+   yarn install
+
+3. Inicie em modo de desenvolvimento:
+   npm start
+   # ou
+   yarn start
+
+4. Acesse no navegador:
+   http://localhost:3000 (ou a porta indicada no console)
+
+## Build para produção
+- Gerar build:
+  npm run build
+  # ou
+  yarn build
+
+- O conteúdo otimizado ficará em `build/` ou `dist/` (dependendo da configuração). Sirva esse diretório com um servidor estático ou integre ao backend.
+
+## Uso
+- Inicie o jogo localmente conforme instruções acima.
+- Controles padrão: (documente aqui os controles reais do jogo)
+  - Teclas de movimentação: W/A/S/D ou setas
+  - Interagir: E / clique
+  - Pausa: Esc
+- Salve/loads: (descreva se houver sistema de salvar)
+- Configurações: ajuste áudio, gráficos e controles no menu de opções (se implementado).
+
+## Testes
+- Se houver testes automatizados:
+  npm test
+  # ou
+  yarn test
+
+Documente aqui comandos específicos e como escrever/rodar testes do projeto.
+
+## Contribuição
+Contribuições são bem-vindas!
+- Abra uma issue para discutir mudanças importantes antes de implementá-las.
+- Faça um fork e crie uma branch com sua feature/bugfix:
+  git checkout -b feat/minha-feature
+- Abra um Pull Request descrevendo as mudanças e como testar.
+- Siga as regras de estilo e padrões de código do projeto.
+
+## Licença
+Este projeto está licenciado sob a Licença MIT. Consulte o arquivo LICENSE para o texto completo.
+
+Resumo: use, modifique e distribua livremente, desde que mantenha o aviso de copyright e a licença.
+
+---
+
+Se quiser, posso:
+- Gerar um arquivo LICENSE com texto completo da MIT License.
+- Ajustar este README ao framework/engine real (ex.: Unity, Godot, Phaser, React Native).
+- Incluir badges (build, license, coverage) e exemplos de comandos mais específicos. Qual opção prefere?
