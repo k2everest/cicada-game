@@ -1,135 +1,112 @@
-name: Prompt Runner
+name: 🤖 Prompt Runner
 
 on:
   push:
     branches:
       - master
-      
 
 jobs:
   run-prompt:
-    if: contains(github.event.head_commit.message, 'prompt:')
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      - name: 🧩 Checkout
+        uses: actions/checkout@v4
 
-      - name: Extrair prompt do commit
-        id: get-prompt
+      - name: ⚙️ Setup environment
         run: |
           set -e
-          COMMIT_MSG="${{ github.event.head_commit.message }}"
-          echo "🧠 Mensagem do commit:"
-          echo "$COMMIT_MSG"
-          PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p')
-          echo "🧩 Prompt extraído: $PROMPT"
-          echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
+          mkdir -p .debug
+          echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> $GITHUB_ENV
 
-      - name: Preparar contexto do repositório
-        id: get-context
+      - name: 🧠 Build reduced context
         run: |
           set -e
-          if [ ! -f .context_initialized.flag ]; then
-            echo "🆕 Gerando contexto inicial..."
-            find . -type f \
-              -not -path "./.git/*" \
-              -not -path "./node_modules/*" \
-              \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" -o -name "*.md" \) \
-              -exec sh -c 'echo "==== $1 ===="; tr -d "\000" < "$1"' _ {} \; > full_context.txt
-            touch .context_initialized.flag
-            git config user.name "prompt-bot"
-            git config user.email "bot@example.com"
-            git add .context_initialized.flag
-            git commit -m "Initialize context snapshot" || echo "⚠️ Flag já existe"
-            git push origin master || echo "⚠️ Push ignorado"
-          else
-            echo "♻️ Atualizando contexto incremental..."
-            if git rev-parse HEAD~1 >/dev/null 2>&1; then
-              FILES=$(git diff --name-only HEAD~1 HEAD)
-            else
-              FILES=$(git ls-files)
-            fi
-            CONTEXT=""
-            for F in $FILES; do
-              if [[ -f "$F" ]]; then
-                CONTEXT+="==== $F ====\n"
-                CONTEXT+=$(tr -d "\000" < "$F")
-                CONTEXT+="\n"
+          echo "🧠 Criando contexto leve..."
+          MAX_SIZE=15000
+          MAX_TOTAL=180000
+          CURRENT_SIZE=0
+
+          echo "" > full_context.txt
+
+          for F in $(git diff --name-only HEAD~1 HEAD || git ls-files); do
+            if [[ -f "$F" ]]; then
+              SIZE=$(wc -c < "$F")
+              if [ "$((CURRENT_SIZE + SIZE))" -gt "$MAX_TOTAL" ]; then
+                echo "🚫 Limite total atingido ($MAX_TOTAL bytes)."
+                break
               fi
-            done
-            echo -e "$CONTEXT" > full_context.txt
-          fi
-          echo "✅ Contexto pronto:"
-          head -n 20 full_context.txt || echo "sem preview"
+              echo "==== $F ====" >> full_context.txt
+              head -c "$MAX_SIZE" "$F" >> full_context.txt
+              echo "\n" >> full_context.txt
+              CURRENT_SIZE=$((CURRENT_SIZE + SIZE))
+            fi
+          done
 
-      - name: Rodar ChatGPT (OpenAI API)
+          echo "📦 Contexto final: $(wc -c < full_context.txt) bytes"
+
+      - name: 🧾 Generate AI Response
         id: ai
         run: |
           set -e
-          echo "🔍 Prompt a enviar:"
-          echo "${{ steps.get-prompt.outputs.prompt }}"
-          echo "🔍 Prévia do contexto (20 linhas):"
-          head -n 20 full_context.txt || echo "sem contexto"
+          COMMIT_MSG="$(git log -1 --pretty=%B | grep '^prompt:' | sed 's/^prompt: //')"
+          echo "📝 Prompt detectado:"
+          echo "$COMMIT_MSG"
 
-          echo "🚀 Enviando requisição para OpenAI..."
-          jq -n \
-            --arg prompt "${{ steps.get-prompt.outputs.prompt }}" \
-            --rawfile context full_context.txt \
-            '{
-              model: "gpt-5",
-              messages: [
-                {"role": "system", "content": "Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato [{path:\"arquivo.ext\",content:\"novo conteúdo\"}]"},
-                {"role": "user", "content": $context},
-                {"role": "user", "content": $prompt}
-              ]
-            }' > payload.json
-
-          echo "🧾 Payload:"
-          cat payload.json
-
-          curl -s -D headers.txt -o body.txt https://api.openai.com/v1/chat/completions \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
-            -d @payload.json
-
-          echo "📦 Cabeçalhos da resposta:"
-          cat headers.txt
-          echo "📬 Corpo bruto da resposta:"
-          cat body.txt
-
-          jq -r '.choices[0].message.content' body.txt > changes.json || echo "⚠️ Falha ao extrair conteúdo"
-          echo "✅ JSON extraído:"
-          cat changes.json || echo "sem conteúdo"
-
-      - name: Validar JSON
-        run: |
-          set -e
-          if [ -s changes.json ]; then
-            echo "✅ Validando JSON..."
-            cat changes.json | jq empty
-          else
-            echo "⚠️ Arquivo changes.json está vazio!"
-            exit 1
+          if [ -z "$COMMIT_MSG" ]; then
+            echo "⚠️ Nenhum prompt encontrado no commit message. Abortando."
+            exit 0
           fi
 
-      - name: Aplicar mudanças nos arquivos
+          echo "🔄 Enviando para GPT-5..."
+          REQUEST=$(jq -n \
+            --arg model "gpt-5" \
+            --arg prompt "$COMMIT_MSG" \
+            --arg context "$(head -c 180000 full_context.txt)" \
+            '{model: $model, messages: [
+              {"role": "system", "content": "Você é um assistente que gera arquivos com base em prompts do commit."},
+              {"role": "user", "content": ($prompt + "\n\nContexto:\n" + $context)}
+            ], max_tokens: 3000}')
+
+          echo "$REQUEST" > .debug/request.json
+
+          RESPONSE=$(curl -s -X POST "https://api.openai.com/v1/chat/completions" \
+            -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "$REQUEST")
+
+          echo "$RESPONSE" > .debug/response.json
+
+          jq -r '.choices[0].message.content' <<< "$RESPONSE" > ai_output.txt || echo "" > ai_output.txt
+
+          echo "✅ Conteúdo gerado:"
+          head -n 20 ai_output.txt
+
+      - name: 💾 Apply changes
         run: |
           set -e
-          echo "🧩 Aplicando mudanças..."
-          cat changes.json | jq -c '.[]' | while read i; do
-            FILE=$(echo $i | jq -r '.path')
-            CONTENT=$(echo $i | jq -r '.content')
-            mkdir -p $(dirname "$FILE")
-            echo "$CONTENT" > "$FILE"
-            echo "✅ Atualizado: $FILE"
-          done
+          if grep -q '"path"' ai_output.txt; then
+            echo "🧩 Aplicando alterações com base no JSON..."
+            echo "$(<ai_output.txt)" | jq -c '.[]' | while read i; do
+              FILE=$(echo $i | jq -r '.path')
+              CONTENT=$(echo $i | jq -r '.content')
+              mkdir -p "$(dirname "$FILE")"
+              echo "$CONTENT" > "$FILE"
+              echo "✅ Atualizado $FILE"
+            done
+          else
+            echo "⚠️ Nenhum JSON válido detectado, nada foi aplicado."
+          fi
 
-      - name: Commit automático
+      - name: 🚀 Commit & Push
         run: |
           set -e
           git config user.name "prompt-bot"
-          git config user.email "bot@example.com"
-          git add .
-          git commit -m "🤖 AI applied changes for prompt" || echo "⚠️ Nada para commitar"
-          git push
+          git config user.email "actions@github.com"
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git add .
+            git commit -m "🤖 AI applied changes for prompt"
+            git push
+            echo "✅ Alterações enviadas!"
+          else
+            echo "⚙️ Nenhuma alteração detectada."
+          fi
