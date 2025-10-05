@@ -1,4 +1,4 @@
-name: 🤖 Prompt Runner
+name: 🤖 Prompt Runner (GPT-5-mini)
 
 on:
   push:
@@ -8,7 +8,6 @@ on:
 jobs:
   run-prompt:
     runs-on: ubuntu-latest
-
 
     steps:
       - name: 🧩 Checkout
@@ -23,9 +22,9 @@ jobs:
       - name: 🧠 Build reduced context
         run: |
           set -e
-          echo "🧠 Criando contexto leve..."
-          MAX_SIZE=15000
-          MAX_TOTAL=180000
+          echo "🧠 Criando contexto leve para GPT-5-mini..."
+          MAX_SIZE=8000       # limite menor para mini
+          MAX_TOTAL=100000    # limite menor para mini
           CURRENT_SIZE=0
           echo "" > full_context.txt
 
@@ -45,7 +44,7 @@ jobs:
 
           echo "📦 Contexto final: $(wc -c < full_context.txt) bytes"
 
-      - name: 🧾 Generate AI Response (GPT-5)
+      - name: 🧾 Generate AI Response (GPT-5-mini)
         id: ai
         run: |
           set -e
@@ -58,23 +57,19 @@ jobs:
             exit 0
           fi
 
-          echo "🔄 Enviando para GPT-5..."
           REQUEST=$(jq -n \
-            --arg model "gpt-5" \
+            --arg model "gpt-5-mini" \
             --arg prompt "$COMMIT_MSG" \
-            --arg context "$(head -c 180000 full_context.txt)" \
+            --arg context "$(head -c $MAX_TOTAL full_context.txt)" \
             '{
               model: $model,
-              temperature: 0.7,
               messages: [
                 {"role": "system", "content": "Você é um assistente que gera arquivos a partir de prompts de commit."},
                 {"role": "user", "content": ($prompt + "\n\nContexto:\n" + $context)}
-              ],
-              max_completion_tokens: 3000
+              ]
             }')
 
-          echo "📤 Requisição enviada:"
-          echo "$REQUEST" | jq . || echo "$REQUEST"
+          echo "$REQUEST" > .debug/request.json
 
           RESPONSE=$(curl -s -w "\n\nHTTP_STATUS=%{http_code}\n" \
             -X POST "https://api.openai.com/v1/chat/completions" \
@@ -83,7 +78,6 @@ jobs:
             -d "$REQUEST")
 
           echo "$RESPONSE" > .debug/response_raw.txt
-          echo "📬 Resposta bruta da API:"
           cat .debug/response_raw.txt
 
           HTTP_STATUS=$(grep "HTTP_STATUS=" .debug/response_raw.txt | cut -d= -f2)
@@ -94,6 +88,7 @@ jobs:
             exit 1
           fi
 
+          # Extrai apenas o JSON útil da resposta
           echo "$RESPONSE" | grep -v "HTTP_STATUS=" > .debug/response.json
           jq -r '.choices[0].message.content' .debug/response.json > ai_output.txt || echo "" > ai_output.txt
 
@@ -129,4 +124,3 @@ jobs:
             echo "✅ Alterações enviadas!"
           else
             echo "⚙️ Nenhuma alteração detectada."
-          fi
