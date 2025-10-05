@@ -1,4 +1,4 @@
-name: 🤖 Prompt Runner
+name: 🤖 Prompt Runner GPT-5-mini
 
 on:
   push:
@@ -8,7 +8,6 @@ on:
 jobs:
   run-prompt:
     runs-on: ubuntu-latest
-    
 
     steps:
       - name: 🧩 Checkout
@@ -20,7 +19,7 @@ jobs:
           mkdir -p .debug
           echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> $GITHUB_ENV
 
-      - name: 🧠 Build reduced context safely
+      - name: 🧠 Build reduced context
         run: |
           set -e
           echo "🧠 Criando contexto leve..."
@@ -32,12 +31,12 @@ jobs:
           for F in $(git diff --name-only HEAD~1 HEAD || git ls-files); do
             if [[ -f "$F" ]]; then
               SIZE=$(wc -c < "$F")
-              if [ $((CURRENT_SIZE + SIZE)) -gt $MAX_TOTAL ]; then
+              if [ "$((CURRENT_SIZE + SIZE))" -gt "$MAX_TOTAL" ]; then
                 echo "🚫 Limite total atingido ($MAX_TOTAL bytes)."
                 break
               fi
               echo "==== $F ====" >> full_context.txt
-              tail -c "$MAX_SIZE" "$F" >> full_context.txt
+              head -c "$MAX_SIZE" "$F" >> full_context.txt
               echo "\n" >> full_context.txt
               CURRENT_SIZE=$((CURRENT_SIZE + SIZE))
             fi
@@ -45,7 +44,7 @@ jobs:
 
           echo "📦 Contexto final: $(wc -c < full_context.txt) bytes"
 
-      - name: 🧾 Generate JSON files (GPT-5-mini)
+      - name: 🧾 Generate AI Response (GPT-5-mini)
         id: ai
         run: |
           set -e
@@ -58,72 +57,63 @@ jobs:
             exit 0
           fi
 
-          echo "🔄 Enviando para GPT-5-mini..."
+          # Enviar para GPT-5-mini
           REQUEST=$(jq -n \
             --arg model "gpt-5-mini-2025-08-07" \
             --arg prompt "$COMMIT_MSG" \
             --arg context "$(head -c 180000 full_context.txt)" \
-            '{
-              model: $model,
+            '{model: $model,
               messages: [
-                {
-                  "role": "system",
-                  "content": "Você é um assistente que gera arquivos a partir de prompts de commit. TODO output deve ser JSON válido com a lista de arquivos [{\"path\": \"arquivo.ext\", \"content\": \"conteúdo\"}]. NÃO adicione texto fora do JSON."
-                },
-                {
-                  "role": "user",
-                  "content": ($prompt + "\n\nContexto:\n" + $context)
-                }
+                {"role":"system","content":"Você é um assistente que gera arquivos a partir de prompts de commit."},
+                {"role":"user","content":($prompt + "\n\nContexto:\n" + $context)}
               ],
               max_completion_tokens: 3000
-            }'
-          )
+            }')
 
           echo "$REQUEST" > .debug/request.json
 
           RESPONSE=$(curl -s -X POST "https://api.openai.com/v1/chat/completions" \
             -H "Authorization: Bearer $OPENAI_API_KEY" \
             -H "Content-Type: application/json" \
-            -d "$REQUEST"
-          )
+            -d "$REQUEST")
 
-          echo "$RESPONSE" > .debug/response.json
+          echo "$RESPONSE" > .debug/response_raw.txt
+          jq -r '.choices[0].message.content' <<< "$RESPONSE" > ai_raw.txt
 
-          # Extrai JSON da resposta
-          jq -r '.choices[0].message.content' .debug/response.json > ai_output_raw.txt
+          echo "✅ Resposta bruta salva em ai_raw.txt"
 
-          # Valida se é JSON
-          if ! jq empty ai_output_raw.txt 2>/dev/null; then
-            echo "❌ Resposta da IA não é JSON válido. Abortando."
-            cat ai_output_raw.txt
-            exit 1
-          fi
-
-          mv ai_output_raw.txt ai_output.txt
-          echo "✅ Resposta JSON válida detectada."
-
-      - name: 💾 Apply AI-generated files
+      - name: 💾 Convert AI output to safe JSON
         run: |
           set -e
-          echo "🧩 Criando/atualizando arquivos..."
-          jq -c '.[]' ai_output.txt | while read i; do
-            FILE=$(echo "$i" | jq -r '.path')
-            CONTENT=$(echo "$i" | jq -r '.content')
-            mkdir -p "$(dirname "$FILE")"
-            echo "$CONTENT" > "$FILE"
-            echo "✅ Arquivo criado/atualizado: $FILE"
-          done
+          AI_CONTENT=$(jq -Rs '.' ai_raw.txt)  # Escapa corretamente quebras de linha e aspas
+          echo "[{\"path\":\"README.md\",\"content\":$AI_CONTENT}]" > ai_output.json
+          echo "✅ JSON seguro gerado em ai_output.json"
+          head -n 20 ai_output.json
 
-      - name: 🚀 Commit & Push
+      - name: 💾 Apply changes and commit
         run: |
           set -e
-          git config user.name "prompt-bot"
-          git config user.email "actions@github.com"
-          if [[ -n "$(git status --porcelain)" ]]; then
-            git add .
-            git commit -m "🤖 AI generated files from commit prompt"
-            git push
-            echo "✅ Alterações enviadas!"
+          if grep -q '"path"' ai_output.json; then
+            echo "🧩 Aplicando alterações..."
+            jq -c '.[]' ai_output.json | while read i; do
+              FILE=$(echo "$i" | jq -r '.path')
+              CONTENT=$(echo "$i" | jq -r '.content')
+              mkdir -p "$(dirname "$FILE")"
+              echo "$CONTENT" > "$FILE"
+              echo "✅ Arquivo atualizado: $FILE"
+            done
+
+            git config user.name "prompt-bot"
+            git config user.email "actions@github.com"
+
+            if [[ -n "$(git status --porcelain)" ]]; then
+              git add .
+              git commit -m "🤖 AI applied changes for prompt"
+              git push
+              echo "✅ Alterações enviadas!"
+            else
+              echo "⚙️ Nenhuma alteração detectada."
+            fi
           else
-            echo "⚙️ Nenhuma alteração detectada."
+            echo "⚠️ Nenhum JSON válido detectado. Resposta GPT ignorada."
           fi
