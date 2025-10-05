@@ -2,13 +2,14 @@ name: Prompt Runner
 
 on:
   push:
-    paths:
-      - 'prompt.txt'
+    branches:
+      - main
+      - master
   workflow_dispatch:
-  
 
 jobs:
   run-prompt:
+    if: github.actor != 'github-actions[bot]' && github.actor != 'prompt-bot'
     runs-on: ubuntu-latest
 
     steps:
@@ -27,7 +28,7 @@ jobs:
           head -c 12000 diff.txt > trimmed_diff.txt
           echo "Contexto cortado para 12k bytes."
           echo "Prompt atual:"
-          cat prompt.txt
+          cat prompt.txt || echo "⚠️ prompt.txt não encontrado"
 
       - name: Rodar ChatGPT (OpenAI API)
         id: ai
@@ -52,7 +53,7 @@ jobs:
               },
               {
                 "role": "user",
-                "content": "$(cat prompt.txt)"
+                "content": "$(cat prompt.txt || echo '')"
               }
             ]
           }
@@ -75,5 +76,5 @@ jobs:
       - name: Commit e push
         run: |
           git add .
-          git commit -m "🤖 Atualização automática via prompt.txt"
-          git push
+          git commit -m "🤖 Atualização automática via prompt.txt" || echo "Nada a commitar."
+          git push || echo "Nenhuma mudança para enviar."
