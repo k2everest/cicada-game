@@ -4,119 +4,131 @@ on:
   push:
     branches:
       - master
-      - main
-  workflow_dispatch:
-  
 
 jobs:
   run-prompt:
-    # Evita loops (não roda em commits do próprio bot)
-    if: contains(github.event.head_commit.message, 'prompt:') && github.actor != 'github-actions[bot]' && github.actor != 'prompt-bot'
+    if: contains(github.event.head_commit.message, 'prompt:')
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repositório
-        uses: actions/checkout@v4
-
-      - name: Configurar Git
-        run: |
-          git config user.name "prompt-bot"
-          git config user.email "bot@github.local"
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
       - name: Extrair prompt do commit
         id: get-prompt
         run: |
+          set -e
           COMMIT_MSG="${{ github.event.head_commit.message }}"
-          PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p' | xargs)
-
-          # Se README.md não existir, instruir criação
-          if [ ! -f "README.md" ]; then
-            PROMPT="$PROMPT\n\nIMPORTANTE: Se README.md não existir, crie um novo README.md completo descrevendo o projeto."
-          fi
-
-          echo "Prompt extraído: $PROMPT"
+          echo "🧠 Mensagem do commit:"
+          echo "$COMMIT_MSG"
+          PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p')
+          echo "🧩 Prompt extraído: $PROMPT"
           echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
 
-      - name: Gerar contexto (somente arquivos alterados)
+      - name: Preparar contexto do repositório
         id: get-context
         run: |
-          if git rev-parse HEAD~1 >/dev/null 2>&1; then
-            FILES=$(git diff --name-only HEAD~1 HEAD)
+          set -e
+          if [ ! -f .context_initialized.flag ]; then
+            echo "🆕 Gerando contexto inicial..."
+            find . -type f \
+              -not -path "./.git/*" \
+              -not -path "./node_modules/*" \
+              \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" -o -name "*.md" \) \
+              -exec sh -c 'echo "==== $1 ===="; tr -d "\000" < "$1"' _ {} \; > full_context.txt
+            touch .context_initialized.flag
+            git config user.name "prompt-bot"
+            git config user.email "bot@example.com"
+            git add .context_initialized.flag
+            git commit -m "Initialize context snapshot" || echo "⚠️ Flag já existe"
+            git push origin master || echo "⚠️ Push ignorado"
           else
-            FILES=$(git ls-files)
-          fi
-          CONTEXT=""
-          for F in $FILES; do
-            if [[ -f "$F" ]]; then
-              CONTEXT+="==== $F ====\n"
-              CONTEXT+=$(tr -d '\u0000' < "$F")
-              CONTEXT+="\n"
+            echo "♻️ Atualizando contexto incremental..."
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              FILES=$(git diff --name-only HEAD~1 HEAD)
+            else
+              FILES=$(git ls-files)
             fi
-          done
-          echo -e "$CONTEXT" > full_context.txt
-          echo "Contexto gerado com $(wc -c < full_context.txt) bytes."
+            CONTEXT=""
+            for F in $FILES; do
+              if [[ -f "$F" ]]; then
+                CONTEXT+="==== $F ====\n"
+                CONTEXT+=$(tr -d "\000" < "$F")
+                CONTEXT+="\n"
+              fi
+            done
+            echo -e "$CONTEXT" > full_context.txt
+          fi
+          echo "✅ Contexto pronto:"
+          head -n 20 full_context.txt || echo "sem preview"
 
       - name: Rodar ChatGPT (OpenAI API)
         id: ai
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          echo "🚀 Executando prompt via GPT-5..."
+          set -e
+          echo "🔍 Prompt a enviar:"
+          echo "${{ steps.get-prompt.outputs.prompt }}"
+          echo "🔍 Prévia do contexto (20 linhas):"
+          head -n 20 full_context.txt || echo "sem contexto"
 
-          # Payload JSON
-          JSON_PAYLOAD=$(jq -n \
-            --arg model "gpt-5" \
+          echo "🚀 Enviando requisição para OpenAI..."
+          jq -n \
             --arg prompt "${{ steps.get-prompt.outputs.prompt }}" \
             --rawfile context full_context.txt \
             '{
-              model: $model,
+              model: "gpt-5",
               messages: [
-                {
-                  "role": "system",
-                  "content": "Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato: [{\"path\":\"arquivo.ext\",\"content\":\"novo conteúdo\"}]. Se README.md não existir, crie um completo descrevendo o projeto."
-                },
+                {"role": "system", "content": "Você é um assistente que edita código. Responda SOMENTE com JSON válido no formato [{path:\"arquivo.ext\",content:\"novo conteúdo\"}]"},
                 {"role": "user", "content": $context},
                 {"role": "user", "content": $prompt}
               ]
-            }'
-          )
+            }' > payload.json
 
-          echo "Payload JSON:"
-          echo "$JSON_PAYLOAD" | jq .
+          echo "🧾 Payload:"
+          cat payload.json
 
-          echo "$JSON_PAYLOAD" > payload.json
-
-          # Chamada da API
-          RESPONSE=$(curl -s -X POST "https://api.openai.com/v1/chat/completions" \
+          curl -s -D headers.txt -o body.txt https://api.openai.com/v1/chat/completions \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $OPENAI_API_KEY" \
-            -d @payload.json)
+            -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
+            -d @payload.json
 
-          echo "Resposta crua da API:"
-          echo "$RESPONSE" > response_raw.json
+          echo "📦 Cabeçalhos da resposta:"
+          cat headers.txt
+          echo "📬 Corpo bruto da resposta:"
+          cat body.txt
 
-          # Extrair conteúdo gerado pelo GPT
-          jq -r '.choices[0].message.content' response_raw.json > changes.json
-          echo "✅ Resposta salva em changes.json"
-          echo "Conteúdo de changes.json:"
-          cat changes.json
+          jq -r '.choices[0].message.content' body.txt > changes.json || echo "⚠️ Falha ao extrair conteúdo"
+          echo "✅ JSON extraído:"
+          cat changes.json || echo "sem conteúdo"
 
-      - name: Validar JSON retornado
-        run: cat changes.json | jq empty
-
-      - name: Aplicar mudanças
+      - name: Validar JSON
         run: |
-          echo "🧩 Aplicando alterações..."
-          jq -c '.[]' changes.json | while read -r item; do
-            path=$(echo "$item" | jq -r '.path')
-            content=$(echo "$item" | jq -r '.content')
-            mkdir -p "$(dirname "$path")"
-            echo "$content" > "$path"
-            echo "Atualizado: $path"
+          set -e
+          if [ -s changes.json ]; then
+            echo "✅ Validando JSON..."
+            cat changes.json | jq empty
+          else
+            echo "⚠️ Arquivo changes.json está vazio!"
+            exit 1
+          fi
+
+      - name: Aplicar mudanças nos arquivos
+        run: |
+          set -e
+          echo "🧩 Aplicando mudanças..."
+          cat changes.json | jq -c '.[]' | while read i; do
+            FILE=$(echo $i | jq -r '.path')
+            CONTENT=$(echo $i | jq -r '.content')
+            mkdir -p $(dirname "$FILE")
+            echo "$CONTENT" > "$FILE"
+            echo "✅ Atualizado: $FILE"
           done
 
-      - name: Commit e push
+      - name: Commit automático
         run: |
+          set -e
+          git config user.name "prompt-bot"
+          git config user.email "bot@example.com"
           git add .
-          git commit -m "🤖 AI applied changes from prompt commit" || echo "Nada para commitar."
-          git push || echo "Nenhuma mudança para enviar."
+          git commit -m "🤖 AI applied changes for prompt" || echo "⚠️ Nada para commitar"
+          git push
