@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - master
-      
 
 jobs:
   run-prompt:
@@ -15,30 +14,157 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v3
 
-      - name: Configurar Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Instalar dependências
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir openai tiktoken jq
+          pip install --no-cache-dir openai tiktoken jq requests
 
-      - name: Extrair prompt do commit
+      - name: Extract prompt from commit
         id: get-prompt
         run: |
           COMMIT_MSG="${{ github.event.head_commit.message }}"
-          PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p')
-          echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
+          SAFE_PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p' | sed 's/"/'\''/g')
+          echo "prompt=$SAFE_PROMPT" >> $GITHUB_OUTPUT
 
-      - name: Preparar contexto do repositório
+      - name: Prepare context
         id: get-context
         run: |
           set -e
-          # snapshot inicial
+          mkdir -p chunks
+          MAX_FILE_SIZE=$((1024*1024))
           if [ ! -f .context_initialized.flag ]; then
-            find . -type f \
-              -not -path "./.git/*" \
-              -not -path "./node_modules/*" \
-              \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html
+            for F in $(find . -type f -not -path "./.git/*" -not -path "./node_modules/*" \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" \)); do
+              SIZE=$(stat -c%s "$F")
+              if [ $SIZE -le $MAX_FILE_SIZE ]; then
+                echo "==== $F ====" >> full_context.txt
+                tr -d "\000" < "$F" >> full_context.txt
+              fi
+            done
+            touch .context_initialized.flag
+            git config user.name "prompt-bot"
+            git config user.email "bot@example.com"
+            git add .context_initialized.flag
+            git commit -m "Initialize context snapshot" || echo "Flag already exists"
+            git push origin master
+          else
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              FILES=$(git diff --name-only HEAD~1 HEAD)
+            else
+              FILES=$(git ls-files)
+            fi
+            CONTEXT=""
+            for F in $FILES; do
+              if [[ -f "$F" ]]; then
+                SIZE=$(stat -c%s "$F")
+                if [ $SIZE -le $MAX_FILE_SIZE ]; then
+                  echo "==== $F ====" >> full_context.txt
+                  tr -d "\000" < "$F" >> full_context.txt
+                fi
+              fi
+            done
+          fi
+
+      - name: Run ChatGPT
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PROMPT: ${{ steps.get-prompt.outputs.prompt }}
+        run: |
+          python <<'PY'
+          import os, json, time, openai, tiktoken
+
+          openai.api_key = os.environ["OPENAI_API_KEY"]
+          prompt = os.environ.get("PROMPT", "").replace('"', "'")
+          model = "gpt-5-mini"
+          max_tokens_per_chunk = 1500
+          max_total_tokens = 45000
+          token_usage = 0
+          adaptive_factor = 0.9
+
+          with open("full_context.txt", "r", encoding="utf-8", errors="ignore") as f:
+              context = f.read()
+
+          encoding = tiktoken.encoding_for_model(model)
+
+          def estimate_tokens(text):
+              return len(encoding.encode(text))
+
+          def split_into_chunks(text, max_toks):
+              ids = encoding.encode(text)
+              return [encoding.decode(ids[i:i + max_toks]) for i in range(0, len(ids), max_toks)]
+
+          chunks = split_into_chunks(context, max_tokens_per_chunk)
+          print(f"📦 Total chunks: {len(chunks)}")
+
+          all_changes = []
+
+          for idx, chunk in enumerate(chunks, 1):
+              tokens = estimate_tokens(chunk)
+              token_usage += tokens
+              if token_usage >= max_total_tokens:
+                  print(f"🚨 Token limit reached ({token_usage}). Stopping early.")
+                  break
+
+              print(f"\n➡️ Sending chunk {idx}/{len(chunks)} | {tokens} tokens (total {token_usage})")
+
+              try:
+                  resp = openai.chat.completions.create(
+                      model=model,
+                      messages=[
+                          {"role": "system", "content": "Você é um assistente de programação que edita código e responde SOMENTE com JSON válido no formato: [{\"path\":\"arquivo.ext\",\"content\":\"novo conteúdo\"}]"},
+                          {"role": "user", "content": chunk},
+                          {"role": "user", "content": prompt}
+                      ]
+                  )
+                  reply = resp.choices[0].message.content
+                  print(f"✅ Chunk {idx} done, {len(reply)} chars.")
+
+                  try:
+                      parsed = json.loads(reply)
+                      all_changes.extend(parsed)
+                  except Exception:
+                      print(f"⚠️ Invalid JSON returned on chunk {idx}, skipping.")
+
+              except Exception as e:
+                  print(f"❌ Error on chunk {idx}: {e}")
+                  max_tokens_per_chunk = int(max_tokens_per_chunk * adaptive_factor)
+                  print(f"↘️ Reducing chunk size to {max_tokens_per_chunk} tokens.")
+                  time.sleep(5)
+
+          unique = {}
+          for c in all_changes:
+              unique[c["path"]] = c["content"]
+
+          with open("changes.json", "w", encoding="utf-8") as f:
+              json.dump([{"path": k, "content": v} for k, v in unique.items()], f, ensure_ascii=False, indent=2)
+
+          print(f"\n🏁 Done. Total tokens sent: {token_usage}")
+          PY
+
+      - name: Validate JSON
+        run: cat changes.json | jq empty
+
+      - name: Apply AI changes
+        run: |
+          cat changes.json | jq -c '.[]' | while read i; do
+            FILE=$(echo "$i" | jq -r '.path')
+            CONTENT=$(echo "$i" | jq -r '.content')
+            mkdir -p "$(dirname "$FILE")"
+            echo "$CONTENT" > "$FILE"
+          done
+
+      - name: Commit AI changes
+        run: |
+          git config user.name "prompt-bot"
+          git config user.email "bot@example.com"
+          FILES=$(jq -r '.[].path' changes.json | tr '\n' ' ')
+          if [ -n "$FILES" ]; then
+            git add $FILES
+            git commit -m "🤖 AI applied prompt changes" || echo "No changes"
+            git push origin master
+          else
+            echo "⚠️ No files changed"
