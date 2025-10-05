@@ -5,10 +5,10 @@ on:
     branches:
       - master
 
-
 jobs:
   run-prompt:
     runs-on: ubuntu-latest
+
     steps:
       - name: 🧩 Checkout
         uses: actions/checkout@v4
@@ -26,7 +26,6 @@ jobs:
           MAX_SIZE=15000
           MAX_TOTAL=180000
           CURRENT_SIZE=0
-
           echo "" > full_context.txt
 
           for F in $(git diff --name-only HEAD~1 HEAD || git ls-files); do
@@ -45,7 +44,7 @@ jobs:
 
           echo "📦 Contexto final: $(wc -c < full_context.txt) bytes"
 
-      - name: 🧾 Generate AI Response
+      - name: 🧾 Generate AI Response (GPT-5)
         id: ai
         run: |
           set -e
@@ -64,38 +63,54 @@ jobs:
             --arg prompt "$COMMIT_MSG" \
             --arg context "$(head -c 180000 full_context.txt)" \
             '{model: $model, messages: [
-              {"role": "system", "content": "Você é um assistente que gera arquivos com base em prompts do commit."},
+              {"role": "system", "content": "Você é um assistente que gera arquivos a partir de prompts de commit."},
               {"role": "user", "content": ($prompt + "\n\nContexto:\n" + $context)}
             ], max_tokens: 3000}')
 
-          echo "$REQUEST" > .debug/request.json
+          echo "📤 Requisição enviada:"
+          echo "$REQUEST" | jq .
 
-          RESPONSE=$(curl -s -X POST "https://api.openai.com/v1/chat/completions" \
+          RESPONSE=$(curl -s -w "\n\nHTTP_STATUS=%{http_code}\n" \
+            -X POST "https://api.openai.com/v1/chat/completions" \
             -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d "$REQUEST")
 
-          echo "$RESPONSE" > .debug/response.json
+          echo "$RESPONSE" > .debug/response_raw.txt
+          echo "📬 Resposta bruta da API:"
+          cat .debug/response_raw.txt
 
-          jq -r '.choices[0].message.content' <<< "$RESPONSE" > ai_output.txt || echo "" > ai_output.txt
+          HTTP_STATUS=$(grep "HTTP_STATUS=" .debug/response_raw.txt | cut -d= -f2)
+          echo "🌐 Código HTTP: $HTTP_STATUS"
 
-          echo "✅ Conteúdo gerado:"
-          head -n 20 ai_output.txt
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "🚨 Erro HTTP detectado. Abortando."
+            exit 1
+          fi
+
+          # Extrai apenas o JSON útil da resposta
+          echo "$RESPONSE" | grep -v "HTTP_STATUS=" > .debug/response.json
+
+          jq -r '.choices[0].message.content' .debug/response.json > ai_output.txt || echo "" > ai_output.txt
+
+          echo "✅ Trecho inicial da resposta GPT:"
+          head -n 30 ai_output.txt
 
       - name: 💾 Apply changes
         run: |
           set -e
           if grep -q '"path"' ai_output.txt; then
-            echo "🧩 Aplicando alterações com base no JSON..."
-            echo "$(<ai_output.txt)" | jq -c '.[]' | while read i; do
-              FILE=$(echo $i | jq -r '.path')
-              CONTENT=$(echo $i | jq -r '.content')
+            echo "🧩 Aplicando alterações..."
+            jq -c '.[]' ai_output.txt | while read i; do
+              FILE=$(echo "$i" | jq -r '.path')
+              CONTENT=$(echo "$i" | jq -r '.content')
               mkdir -p "$(dirname "$FILE")"
               echo "$CONTENT" > "$FILE"
-              echo "✅ Atualizado $FILE"
+              echo "✅ Arquivo atualizado: $FILE"
             done
           else
-            echo "⚠️ Nenhum JSON válido detectado, nada foi aplicado."
+            echo "⚠️ Nenhum JSON válido detectado. Resposta GPT ignorada."
+            echo "👉 Resposta bruta salva em .debug/response_raw.txt"
           fi
 
       - name: 🚀 Commit & Push
