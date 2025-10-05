@@ -1,46 +1,48 @@
-name: Prompt Runner
+name: 🧠 Prompt Runner (GPT-5-mini)
 
 on:
   push:
     branches:
       - master
 
-
 jobs:
   run-prompt:
     if: contains(github.event.head_commit.message, 'prompt:')
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      MODEL: gpt-5-mini
 
-      - name: Extract prompt from commit message
+    steps:
+      - name: 🧩 Checkout repo
+        uses: actions/checkout@v4
+
+      - name: 🧠 Extrair prompt do commit
         id: get-prompt
         run: |
           COMMIT_MSG="${{ github.event.head_commit.message }}"
           PROMPT=$(echo "$COMMIT_MSG" | sed -n 's/.*prompt:\(.*\)/\1/p')
           echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
+          echo "📥 Prompt extraído: $PROMPT"
 
-      - name: Prepare context snapshot
-        id: get-context
+      - name: 🧱 Preparar contexto (repo ou diff)
+        id: prepare-context
         run: |
           set -e
           if [ ! -f .context_initialized.flag ]; then
-            echo "📦 Creating full context snapshot..."
+            echo "📦 Primeira execução — enviando repo completo..."
             find . -type f \
               -not -path "./.git/*" \
               -not -path "./node_modules/*" \
+              -not -path "./responses/*" \
+              -not -path "./.github/*" \
               \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.html" -o -name "*.css" -o -name "*.md" \) \
-              -exec sh -c 'echo "==== $1 ===="; tr -d "\000" < "$1"' _ {} \; > full_context.txt
+              -exec sh -c 'echo "==== {} ===="; tr -d "\000" < "{}"' \; > full_context.txt
             touch .context_initialized.flag
-            git config user.name "prompt-bot"
-            git config user.email "bot@example.com"
-            git add .context_initialized.flag
-            git commit -m "Initialize context snapshot" || echo "Flag already exists"
-            git push origin master || true
+            echo "✅ Contexto inicial criado (repo completo)."
           else
-            echo "🧩 Creating diff-based context..."
+            echo "🔍 Repositório já inicializado — enviando apenas diff..."
             if git rev-parse HEAD~1 >/dev/null 2>&1; then
               FILES=$(git diff --name-only HEAD~1 HEAD)
             else
@@ -55,10 +57,21 @@ jobs:
               fi
             done
             echo -e "$CONTEXT" > full_context.txt
+            echo "✅ Contexto (diff) gerado com sucesso."
           fi
 
-      - name: Split context into token-safe chunks
-        id: chunk
+      - name: 🔢 Estimar tokens (tamanho do contexto)
         run: |
-          set -e
-          mkdir -p chunks
+          TOKENS=$(wc -c < full_context.txt)
+          echo "📊 Estimativa aproximada de tokens usados: $((TOKENS / 4))"
+
+      - name: 🤖 Enviar prompt para GPT-5-mini
+        id: ai
+        run: |
+          RESPONSE=$(jq -n \
+            --arg prompt "${{ steps.get-prompt.outputs.prompt }}" \
+            --rawfile context full_context.txt \
+            '{
+              "model": "gpt-5-mini",
+              "messages": [
+                {"role": "system", "content": "Você é um assistente de programação autônomo. Analise o contexto do repositório e apli
