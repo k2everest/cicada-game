@@ -3,9 +3,8 @@ name: 🤖 Prompt Runner GPT-5-mini
 on:
   push:
     branches:
-      - master
       - main
-
+      - master
 
 jobs:
   run-prompt:
@@ -28,45 +27,52 @@ jobs:
           MAX_SIZE=15000
           MAX_TOTAL=180000
           CURRENT_SIZE=0
-          echo "" > full_context.txt
-          for F in $(git diff --name-only HEAD~1 HEAD || git ls-files); do
-            if [[ -f "$F" ]]; then
-              SIZE=$(wc -c < "$F")
-              if [ "$((CURRENT_SIZE + SIZE))" -gt "$MAX_TOTAL" ]; then
-                echo "🚫 Limite total atingido ($MAX_TOTAL bytes)."
-                break
+          CONTEXT_FILE=full_context.txt
+
+          # Se arquivo não existe ou está vazio, gera completo
+          if [ ! -f "$CONTEXT_FILE" ] || [ ! -s "$CONTEXT_FILE" ]; then
+            echo "" > "$CONTEXT_FILE"
+            for F in $(git ls-files); do
+              if [[ -f "$F" ]]; then
+                SIZE=$(wc -c < "$F")
+                if [ "$((CURRENT_SIZE + SIZE))" -gt "$MAX_TOTAL" ]; then
+                  break
+                fi
+                echo "==== $F ====" >> "$CONTEXT_FILE"
+                head -c "$MAX_SIZE" "$F" >> "$CONTEXT_FILE"
+                echo "\n" >> "$CONTEXT_FILE"
+                CURRENT_SIZE=$((CURRENT_SIZE + SIZE))
               fi
-              echo "==== $F ====" >> full_context.txt
-              head -c "$MAX_SIZE" "$F" >> full_context.txt
-              echo "\n" >> full_context.txt
-              CURRENT_SIZE=$((CURRENT_SIZE + SIZE))
-            fi
-          done
-          echo "📦 Contexto final: $(wc -c < full_context.txt) bytes"
+            done
+          fi
+
+          echo "📦 Contexto final: $(wc -c < "$CONTEXT_FILE") bytes"
 
       - name: 🧾 Generate AI Response (GPT-5-mini)
         id: ai
         run: |
           set -e
-          COMMIT_MSG="$(git log -1 --pretty=%B | grep '^prompt:' | sed 's/^prompt: //')"
-          echo "📝 Prompt detectado:"
-          echo "$COMMIT_MSG"
+          # Pega o prompt do commit
+          COMMIT_MSG=$(git log -1 --pretty=%B | grep '^prompt:' | sed 's/^prompt: //')
           if [ -z "$COMMIT_MSG" ]; then
-            echo "⚠️ Nenhum prompt encontrado no commit message. Abortando."
+            echo "⚠️ Nenhum prompt encontrado. Abortando."
             exit 0
           fi
+          echo "📝 Prompt detectado: $COMMIT_MSG"
 
           REQUEST=$(jq -n \
             --arg model "gpt-5-mini-2025-08-07" \
             --arg prompt "$COMMIT_MSG" \
-            --arg context "$(head -c 180000 full_context.txt)" \
-            '{model: $model,
+            --arg context "$(head -c 180000 "$CONTEXT_FILE")" \
+            '{
+              model: $model,
               messages: [
-                {"role":"system","content":"Você é um assistente que gera arquivos a partir de prompts de commit."},
-                {"role":"user","content":($prompt + "\n\nContexto:\n" + $context)}
+                {role:"system", content:"Você é um assistente de programação Cicada, uma bet casa de apostas, que gera arquivos a partir de prompts de commit."},
+                {role:"user", content:($prompt + "\n\nContexto:\n" + $context)}
               ],
               max_completion_tokens: 3000
-            }')
+            }'
+          )
 
           echo "$REQUEST" > .debug/request.json
 
@@ -82,7 +88,9 @@ jobs:
       - name: 💾 Convert AI output to safe JSON
         run: |
           set -e
-          jq -n --arg content "$(cat ai_raw.txt)" '[{path:"README.md", content:$content}]' > ai_output.json
+          AI_CONTENT=$(jq -Rs '.' ai_raw.txt)
+          # Gera JSON seguro para aplicação
+          echo "{ \"path\": \"README.md\", \"content\": $AI_CONTENT }" > ai_output.json
           echo "✅ JSON seguro gerado em ai_output.json"
           head -n 20 ai_output.json
 
@@ -91,7 +99,7 @@ jobs:
           set -e
           if grep -q '"path"' ai_output.json; then
             echo "🧩 Aplicando alterações..."
-            jq -c '.[]' ai_output.json | while read i; do
+            jq -c '.' ai_output.json | while read i; do
               FILE=$(echo "$i" | jq -r '.path')
               CONTENT=$(echo "$i" | jq -r '.content')
               mkdir -p "$(dirname "$FILE")"
