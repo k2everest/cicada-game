@@ -1,6 +1,5 @@
 name: 🤖 Prompt Runner GPT-5-mini
 
-
 on:
   push:
     branches:
@@ -29,9 +28,7 @@ jobs:
           MAX_TOTAL=180000
           CURRENT_SIZE=0
           echo "" > full_context.txt
-          # Se for primeira execução, pega todos arquivos
-          FILES=$(git diff --name-only HEAD~1 HEAD || git ls-files)
-          for F in $FILES; do
+          for F in $(git diff --name-only HEAD~1 HEAD || git ls-files); do
             if [[ -f "$F" ]]; then
               SIZE=$(wc -c < "$F")
               if [ "$((CURRENT_SIZE + SIZE))" -gt "$MAX_TOTAL" ]; then
@@ -57,20 +54,18 @@ jobs:
             echo "⚠️ Nenhum prompt encontrado no commit message. Abortando."
             exit 0
           fi
-
           REQUEST=$(jq -n \
             --arg model "gpt-5-mini-2025-08-07" \
             --arg prompt "$COMMIT_MSG" \
             --arg context "$(head -c 180000 full_context.txt)" \
             '{model: $model,
               messages: [
-                {"role":"system","content":"Você é um assistente que gera arquivos a partir de prompts de commit. Ele deve ser preciso e gerar JSON seguro sem caracteres que quebrem o workflow."},
+                {"role":"system","content":"Você é um assistente de programação Cicada, gera arquivos a partir de prompts de commit e formata texto em JSON seguro."},
                 {"role":"user","content":($prompt + "\n\nContexto:\n" + $context)}
               ],
               max_completion_tokens: 3000
             }')
           echo "$REQUEST" > .debug/request.json
-
           RESPONSE=$(curl -s -X POST "https://api.openai.com/v1/chat/completions" \
             -H "Authorization: Bearer $OPENAI_API_KEY" \
             -H "Content-Type: application/json" \
@@ -82,7 +77,6 @@ jobs:
       - name: 💾 Convert AI output to safe JSON
         run: |
           set -e
-          # Gera JSON seguro escapando todos caracteres especiais
           jq -Rn --arg content "$(cat ai_raw.txt)" '[{path:"README.md", content:$content}]' > ai_output.json
           echo "✅ JSON seguro gerado em ai_output.json"
           head -n 20 ai_output.json
@@ -96,11 +90,8 @@ jobs:
               FILE=$(echo "$i" | jq -r '.path')
               CONTENT=$(echo "$i" | jq -r '.content')
               mkdir -p "$(dirname "$FILE")"
-              # Só sobrescreve se houver alteração real
-              if [[ ! -f "$FILE" || "$(cat "$FILE")" != "$CONTENT" ]]; then
-                echo "$CONTENT" > "$FILE"
-                echo "✅ Arquivo atualizado: $FILE"
-              fi
+              echo "$CONTENT" > "$FILE"
+              echo "✅ Arquivo atualizado: $FILE"
             done
             git config user.name "prompt-bot"
             git config user.email "actions@github.com"
