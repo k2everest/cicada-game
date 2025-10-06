@@ -5,7 +5,6 @@ on:
     branches:
       - master
       - main
-      
 
 jobs:
   run-prompt:
@@ -61,16 +60,16 @@ jobs:
             --arg model "gpt-5-mini-2025-08-07" \
             --arg prompt "$COMMIT_MSG" \
             --arg context "$(head -c 180000 full_context.txt)" \
-            '{
-              model: $model,
+            '{model: $model,
               messages: [
-                {"role":"system","content":"Você é um assistente que gera arquivos a partir de prompts de commit. Sempre retorne JSON válido, sem colchetes ou caracteres especiais."},
+                {"role":"system","content":"Você é um assistente de programação chamado Cicada. Ele gera ou altera arquivos do repositório com base no prompt do commit. Esta bet é uma casa de apostas."},
                 {"role":"user","content":($prompt + "\n\nContexto:\n" + $context)}
               ],
               max_completion_tokens: 3000
             }')
 
           echo "$REQUEST" > .debug/request.json
+
           RESPONSE=$(curl -s -X POST "https://api.openai.com/v1/chat/completions" \
             -H "Authorization: Bearer $OPENAI_API_KEY" \
             -H "Content-Type: application/json" \
@@ -83,17 +82,17 @@ jobs:
       - name: 💾 Convert AI output to safe JSON
         run: |
           set -e
-          AI_CONTENT=$(jq -Rs '.' ai_raw.txt)  # Escapa corretamente quebras de linha e aspas
-          echo "{ \"path\": \"README.md\", \"content\": $AI_CONTENT }" > ai_output.json
+          AI_CONTENT=$(jq -Rs '.' ai_raw.txt)  # Escapa quebras de linha e aspas
+          echo "{\"path\":\"README.md\",\"content\":$AI_CONTENT}" > ai_output.json
           echo "✅ JSON seguro gerado em ai_output.json"
           head -n 20 ai_output.json
 
       - name: 💾 Apply changes and commit
         run: |
           set -e
-          if [ -f ai_output.json ] && grep -q '"path"' ai_output.json; then
+          if grep -q '"path"' ai_output.json; then
             echo "🧩 Aplicando alterações..."
-            jq -c '.' ai_output.json | while read i; do
+            jq -c '.[]' ai_output.json | while read i; do
               FILE=$(echo "$i" | jq -r '.path')
               CONTENT=$(echo "$i" | jq -r '.content')
               mkdir -p "$(dirname "$FILE")"
