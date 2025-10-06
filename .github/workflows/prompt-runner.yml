@@ -5,7 +5,6 @@ on:
     branches:
       - master
       - main
-      
 
 jobs:
   run-prompt:
@@ -83,14 +82,14 @@ jobs:
       - name: 💾 Convert AI output to safe JSON
         run: |
           set -e
-          python3 - <<EOF
+          python3 - <<END
 import json
 with open("ai_raw.txt", "r", encoding="utf-8") as f:
     content = f.read()
 output = [{"path": "README.md", "content": content}]
 with open("ai_output.json", "w", encoding="utf-8") as f:
     json.dump(output, f, ensure_ascii=False)
-EOF
+END
           echo "✅ JSON seguro gerado em ai_output.json"
           head -n 20 ai_output.json
 
