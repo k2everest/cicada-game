@@ -5,7 +5,6 @@ on:
     branches:
       - master
       - main
-      
 
 jobs:
   run-prompt:
@@ -51,19 +50,19 @@ jobs:
           COMMIT_MSG="$(git log -1 --pretty=%B | grep '^prompt:' | sed 's/^prompt: //')"
           echo "📝 Prompt detectado:"
           echo "$COMMIT_MSG"
-
           if [ -z "$COMMIT_MSG" ]; then
             echo "⚠️ Nenhum prompt encontrado no commit message. Abortando."
             exit 0
           fi
 
+          # Enviar para GPT-5-mini
           REQUEST=$(jq -n \
             --arg model "gpt-5-mini-2025-08-07" \
             --arg prompt "$COMMIT_MSG" \
             --arg context "$(head -c 180000 full_context.txt)" \
             '{model: $model,
               messages: [
-                {"role":"system","content":"Você é um assistente de programação chamado Cicada. Ele gera ou altera arquivos do repositório com base no prompt do commit. Esta bet é uma casa de apostas."},
+                {"role":"system","content":"Você é um assistente de programação Cicada que gera arquivos a partir de prompts de commit. Cicada é uma bet casa de apostas."},
                 {"role":"user","content":($prompt + "\n\nContexto:\n" + $context)}
               ],
               max_completion_tokens: 3000
@@ -83,8 +82,9 @@ jobs:
       - name: 💾 Convert AI output to safe JSON
         run: |
           set -e
-          AI_CONTENT=$(jq -Rs '.' ai_raw.txt)  # Escapa quebras de linha e aspas
-          echo "{\"path\":\"README.md\",\"content\":$AI_CONTENT}" > ai_output.json
+          AI_CONTENT=$(jq -Rs '.' ai_raw.txt)
+          # Sempre criar um array com objeto
+          echo "[{\"path\":\"README.md\",\"content\":$AI_CONTENT}]" > ai_output.json
           echo "✅ JSON seguro gerado em ai_output.json"
           head -n 20 ai_output.json
 
