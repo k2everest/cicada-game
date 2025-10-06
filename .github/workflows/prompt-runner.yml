@@ -1,62 +1,113 @@
-name: 🤖 Prompt Runner
-
+name: 🤖 Prompt Runner GPT-5-mini - Lovable
 
 on:
   push:
     branches:
-      - main
       - master
-    paths:
-      - '.github/prompts/**'
+      - main
+
 
 jobs:
   run-prompt:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 🧩 Checkout do repositório
+      - name: 🧩 Checkout
         uses: actions/checkout@v4
 
-      - name: 🧠 Executar prompt se houver commit com "prompt:"
-        id: run
-        if: contains(github.event.head_commit.message, 'prompt:')
+      - name: ⚙️ Setup environment
         run: |
           set -e
-          echo "🧩 Executando prompt..."
-          
-          # Extrai o conteúdo do arquivo de prompt
-          PROMPT_FILE=$(find .github/prompts -type f | head -n 1)
-          echo "🧠 Lendo prompt de: $PROMPT_FILE"
-          PROMPT_CONTENT=$(cat "$PROMPT_FILE")
-          
-          # Envia o prompt para a API do OpenAI
-          echo "💬 Enviando prompt..."
-          RESPONSE=$(curl -s -X POST "https://api.openai.com/v1/responses" \
-            -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "model": "gpt-5",
-              "input": '"$(jq -Rs <<< "$PROMPT_CONTENT")"'
+          mkdir -p .debug
+          echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> $GITHUB_ENV
+      - name: 🧠 Build conditional context
+        run: |
+          set -e
+          echo "🧠 Criando contexto condicional..."
+          FULL_FILE=".debug/full_context.txt"
+          echo "" > $FULL_FILE
+          if [ ! -f ".debug/last_commit.txt" ]; then
+            echo "📦 Primeira execução: contexto completo"
+            for F in $(git ls-files); do
+              if [[ -f "$F" ]]; then
+                echo "==== $F ====" >> $FULL_FILE
+                head -c 15000 "$F" >> $FULL_FILE
+                echo "\n" >> $FULL_FILE
+              fi
+            done
+          else
+            echo "📦 Execução incremental: apenas arquivos modificados"
+            LAST_COMMIT=$(cat .debug/last_commit.txt)
+            for F in $(git diff --name-only $LAST_COMMIT HEAD); do
+              if [[ -f "$F" ]]; then
+                echo "==== $F ====" >> $FULL_FILE
+                head -c 15000 "$F" >> $FULL_FILE
+                echo "\n" >> $FULL_FILE
+              fi
+            done
+          fi
+          git rev-parse HEAD > .debug/last_commit.txt
+          echo "📦 Contexto final: $(wc -c < $FULL_FILE) bytes"
+      - name: 🧾 Generate AI Response (GPT-5-mini)
+        id: ai
+        run: |
+          set -e
+          COMMIT_MSG="$(git log -1 --pretty=%B | grep '^prompt:' | sed 's/^prompt: //')"
+          if [ -z "$COMMIT_MSG" ]; then
+            echo "⚠️ Nenhum prompt encontrado no commit. Abortando."
+            exit 0
+          fi
+          REQUEST=$(jq -n \
+            --arg model "gpt-5-mini-2025-08-07" \
+            --arg prompt "$COMMIT_MSG" \
+            --arg context "$(head -c 180000 $FULL_FILE)" \
+            '{model: $model,
+              messages: [
+                {"role":"system","content":"Você é um assistente de programação Cicada que gera alterações em arquivos do repositório com base em prompts de commit. Cicada é uma bet casa de apostas."},
+                {"role":"user","content":($prompt + "\n\nContexto:\n" + $context)}
+              ],
+              max_completion_tokens: 3000
             }')
-
-          # Extrai o conteúdo de resposta (seguro)
-          echo "$RESPONSE" | jq -r '.output_text' > ai_raw.txt
-
-          echo "🧩 Aplicando alterações com segurança..."
-          AI_RAW=$(cat ai_raw.txt)
-          jq -Rn --arg content "$AI_RAW" '[{path:"README.md", content:$content}]' > ai_output.json
-          
-          cat ai_output.json | jq .
-          
-          # Aplica o conteúdo no repositório
-          echo "$AI_RAW" > README.md
-
-      - name: 💾 Commitar resultado
-        if: steps.run.conclusion == 'success'
+          echo "$REQUEST" > .debug/request.json
+          RESPONSE=$(curl -s -X POST "https://api.openai.com/v1/chat/completions" \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$REQUEST")
+          echo "$RESPONSE" > .debug/response_raw.txt
+          jq -r '.choices[0].message.content' <<< "$RESPONSE" > ai_raw.txt
+          echo "✅ Resposta bruta salva em ai_raw.txt"
+      - name: 💾 Convert AI output to safe JSON
         run: |
           set -e
-          git config --global user.name "prompt-runner-bot"
-          git config --global user.email "bot@github.com"
-          git add README.md
-          git commit -m "🧠 auto: atualização de conteúdo a partir do prompt"
-          git push
+          # Escapa quebras de linha e aspas para JSON válido
+          AI_CONTENT=$(jq -Rs '.' ai_raw.txt)
+          echo "$AI_CONTENT" > ai_safe.txt
+          echo "✅ Conteúdo seguro gerado"
+      - name: 💾 Apply AI changes
+        run: |
+          set -e
+          # Espera JSON no formato: [{"path":"arquivo","content":"conteudo"}]
+          AI_SAFE=$(cat ai_safe.txt)
+          if echo "$AI_SAFE" | grep -q 'path'; then
+            echo "🧩 Aplicando alterações..."
+            # Itera sobre objetos JSON
+            echo "$AI_SAFE" | jq -c '.[]' | while read i; do
+              FILE=$(echo "$i" | jq -r '.path')
+              CONTENT=$(echo "$i" | jq -r '.content')
+              mkdir -p "$(dirname "$FILE")"
+              echo "$CONTENT" > "$FILE"
+              echo "✅ Atualizado $FILE"
+            done
+            git config user.name "prompt-bot"
+            git config user.email "actions@github.com"
+            if [[ -n "$(git status --porcelain)" ]]; then
+              git add .
+              git commit -m "🤖 AI applied changes for prompt"
+              git push
+              echo "✅ Alterações enviadas!"
+            else
+              echo "⚙️ Nenhuma alteração detectada."
+            fi
+          else
+            echo "⚠️ Nenhum JSON válido detectado. Resposta GPT ignorada."
+          fi
