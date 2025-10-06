@@ -7,7 +7,7 @@
     },
     {
       "role": "user",
-      "content": "Você é um assistente de programação para o projeto Cicada, uma bet casa de apostas. Gere ou atualize arquivos do repositório com base no prompt. Sempre retorne JSON válido, onde cada arquivo contém as chaves \"path\" e \"content\". Formate corretamente o README.md com: descrição, instalação, uso e licença. Não inclua nenhum caractere especial que quebre o JSON, apenas aspas normais e texto simples. Só altere arquivos se necessário.\n\nContexto:\n"
+      "content": "analise https://github.com/k2everest/cicada-game  e resolva o problema de estar preto e branco no windows 7, responda em JSON\n\nContexto:\n"
     }
   ],
   "max_completion_tokens": 3000

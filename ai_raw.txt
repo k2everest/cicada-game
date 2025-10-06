@@ -1,6 +1,45 @@
-[
-  {
-    "path": "README.md",
-    "content": "Cicada - Casa de apostas\n\nDescrição:\nCicada é uma plataforma de apostas (betting house) projetada para gerenciar mercados, eventos e apostas de maneira segura e escalável. Este repositório contém o código-fonte do backend e ferramentas auxiliares para desenvolvimento, testes e deploy.\n\nInstalação:\nRequisitos:\n- Node.js 18 ou superior\n- npm ou yarn\n- Docker (opcional)\n\nPassos básicos:\n1. Clone o repositório:\n   git clone https://seu-repositorio/cicada.git\n   cd cicada\n2. Instale dependências:\n   npm install\n   ou\n   yarn install\n3. Configure variáveis de ambiente:\n   cp .env.example .env\n   Edite o arquivo .env com as credenciais e configurações necessárias\n4. Build e execução:\n   npm run build\n   npm start\n\nAlternativa com Docker:\n1. Build da imagem:\n   docker build -t cicada .\n2. Executar o container (exemplo):\n   docker run -p 3000:3000 --env-file .env cicada\n\nUso:\nModo de desenvolvimento:\n- Iniciar em modo dev com recarga automática:\n  npm run dev\n\nComandos úteis:\n- Iniciar aplicação: npm start\n- Rodar testes: npm test\n- Rodar lint: npm run lint\n\nExemplo de chamada HTTP (health check):\n- Verificar saúde da aplicação:\n  curl -X GET http://localhost:3000/health\n\nPortas e endpoints:\n- A aplicação geralmente roda na porta 3000 por padrão. Verifique o arquivo .env para ajustar a porta e outras configurações.\n\nLicença:\nCicada é distribuído sob a licença MIT. Consulte o arquivo LICENSE para os termos completos. Ao usar este software, respeite as leis locais relacionadas a jogos e apostas."
-  }
-]
+{
+  "repository": "https://github.com/k2everest/cicada-game",
+  "reported_problem": "Ao rodar em Windows 7 o jogo aparece em preto e branco (grayscale).",
+  "analysis_summary": "Em jogos Pygame/SDL no Windows 7 é comum que a superfície de exibição caia para um modo paletizado (8-bit) — resultando em imagem preto e branco ou com cores incorretas — quando a janela é criada sem forçar profundidade de cor (bits-per-pixel) ou quando imagens são convertidas de forma que perdem o canal alfa. Outra causa comum é uso inadvertido de set_palette() ou carregamento/convert() de imagens que faz downgrade da profundidade.",
+  "likely_root_causes": [
+    "Chamadas para pygame.display.set_mode(...) sem forçar profundidade (BPP) podem deixar o SDL escolher 8-bit em drivers antigos do Windows 7.",
+    "Imagens carregadas com image.convert() podem perder o canal alfa — ou serem convertidas para um formato paletizado — dependendo da superfície de exibição atual.",
+    "Uso acidental de pygame.display.set_palette() em algum ponto do código (ou criação de superfícies paletizadas).",
+    "Inicialização de display feita tardiamente (depois de operações gráficos) ou ordem inválida de chamadas do Pygame."
+  ],
+  "proposed_fix_summary": "Forçar a criação da janela em 32-bit (ou 24-bit) no início da inicialização do Pygame, assegurar que todas as imagens sejam carregadas com convert_alpha() quando tiverem transparência, e evitar set_palette()/superfícies 8-bit. Adicionar uma pequena rotina utilitária para garantir a exibição em cores verdadeiras em Windows 7/SDL legado.",
+  "changes": [
+    {
+      "path": "cicada/fix_display.py",
+      "type": "add",
+      "content": "import pygame\nimport sys\n\n\"\"\"\nUtility to force a 24/32 bpp display surface to avoid 8-bit paletted fallback\non older Windows (e.g. Windows 7) / older SDL drivers that cause grayscale\nor wrong colors.\n\nUsage: import cicada.fix_display as fix_display\n       fix_display.ensure_truecolor_display(width, height, flags)\n\nThe module tries to set a 32-bit display; if that fails, falls back to 24 then default.\nAlso provides a safe image loader that keeps alpha when present.\n\"\"\"\n\n\ndef ensure_truecolor_display(size, flags=0, bpp_preference=(32, 24)):\n    \"\"\"Try to set display surface with preferred BPP values.\n\n    size: (width, height)\n    flags: pygame display flags (e.g. pygame.RESIZABLE | pygame.DOUBLEBUF)\n    bpp_preference: tuple of integers to try in order (default 32 then 24)\n    \"\"\"\n    # Initialize display subsystem if not already initialized\n    if not pygame.display.get_init():\n        pygame.display.init()\n\n    for bpp in bpp_preference:\n        try:\n            surface = pygame.display.set_mode(size, flags, bpp)\n            # verify we actually got requested bpp\n            obtained_bpp = surface.get_bitsize()\n            if obtained_bpp >= 24:\n                return surface\n        except Exception:\n            # try next bpp\n            continue\n\n    # Final fallback: let SDL choose (no explicit bpp)\n    return pygame.display.set_mode(size, flags)\n\n\ndef load_image(path):\n    \"\"\"Safe image loader: use convert_alpha() when image has alpha channel,\n    otherwise convert() for faster blitting. Avoids accidental palette/8-bit surfaces.\n    \"\"\"\n    img = pygame.image.load(path)\n    # If the image has per-pixel alpha, convert_alpha keeps it\n    try:\n        if img.get_alpha() is not None:\n            return img.convert_alpha()\n        else:\n            return img.convert()\n    except Exception:\n        # As a last resort return the raw surface\n        return img\n"
+    },
+    {
+      "path": "README-fix-windows7.md",
+      "type": "add",
+      "content": "Windows 7 color/grayscale issue (diagnosis & quick fix)\n\nSymptoms\n- Game renders in grayscale (black & white) on Windows 7 but looks fine on modern OSes.\n\nCause\n- Older SDL/drivers may choose an 8-bit paletted display surface if the application doesn't\n  explicitly request a truecolor BPP (24/32). Paletted modes render wrong colors or grayscale.\n\nFix\n1) Import and call the helper at Pygame initialization (before loading images):\n   from cicada import fix_display\n   screen = fix_display.ensure_truecolor_display((WIDTH, HEIGHT), flags)\n\n2) Load images using fix_display.load_image(path) instead of pygame.image.load(...)\n   to preserve alpha and avoid paletted surfaces.\n\n3) Make sure you don't call pygame.display.set_palette() anywhere.\n\nTesting\n- Run on Windows 7 machine (or VM) and confirm colors restored.\n\nNotes\n- This fix is defensive: it tries 32-bit, then 24-bit, then falls back to default.\n- Keep the changes near the start of your game's main initialization so surfaces\n  and images are created using the truecolor display surface.\n"
+    },
+    {
+      "path": "instructions_patch.md",
+      "type": "add",
+      "content": "How to apply the fix\n\n1) Add the file cicada/fix_display.py to the project (contents provided).\n2) In your main initialization file (e.g. main.py, run.py or wherever you call pygame.init() / set_mode),\n   replace the direct pygame.display.set_mode(...) call with something like:\n\n   import pygame\n   from cicada import fix_display\n\n   pygame.init()\n   flags = pygame.RESIZABLE  # or your existing flags\n   size = (WIDTH, HEIGHT)\n   screen = fix_display.ensure_truecolor_display(size, flags)\n\n3) Replace calls to pygame.image.load(path) that later call convert/convert_alpha with\n   fix_display.load_image(path) to ensure images are returned in appropriate formats.\n\n4) Ensure there is no call to pygame.display.set_palette() anywhere in the code.\n\n5) Run and test on Windows 7.\n"
+    }
+  ],
+  "example_patch_snippet": {
+    "description": "Example replace in main initialization (what to change inside your main file)",
+    "before": "pygame.init()\nscreen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)\n# ... and later\nimage = pygame.image.load('assets/sprite.png').convert()",
+    "after": "import pygame\nfrom cicada import fix_display\n\npygame.init()\nflags = pygame.RESIZABLE\nscreen = fix_display.ensure_truecolor_display((WIDTH, HEIGHT), flags)\n# ... and later\nimage = fix_display.load_image('assets/sprite.png')"
+  },
+  "test_instructions": [
+    "Start the game on Windows 7 (native or VM) after applying the changes.",
+    "Confirm the display is in color (not grayscale) and sprites/tiles appear with proper colors and transparency.",
+    "If still grayscale, inspect for any remaining calls to pygame.display.set_palette() or manual palette/surface creation; remove or adapt them.",
+    "You can verify the chosen bpp at runtime by printing screen.get_bitsize() immediately after set_mode; expected >= 24."
+  ],
+  "notes_and_caveats": [
+    "This is a defensive, minimally invasive fix. It avoids large refactors and focuses on forcing truecolor display early in startup.",
+    "If your project uses hardware-accelerated OpenGL contexts or other backends, make sure flags passed to ensure_truecolor_display match your needs (e.g. OPENGL).",
+    "If the repository uses a different framework (not Pygame/SDL), please inform me — the advice will differ (e.g., for SFML, SDL2 native, Godot, Unity, etc.)."
+  ]
+}
