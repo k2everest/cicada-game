@@ -1,4 +1,4 @@
-name: 🤖 Prompt Runner GPT-5-mini
+name: 🤖 Prompt Runner GPT-5-mini - Lovable
 
 on:
   push:
@@ -20,91 +20,83 @@ jobs:
           set -e
           mkdir -p .debug
           echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> $GITHUB_ENV
-
-      - name: 🧠 Build reduced context
+      - name: 🧠 Build conditional context
         run: |
           set -e
-          echo "🧠 Criando contexto leve..."
-          MAX_SIZE=15000
-          MAX_TOTAL=180000
-          CURRENT_SIZE=0
-          echo "" > full_context.txt
-          for F in $(git diff --name-only HEAD~1 HEAD || git ls-files); do
-            if [[ -f "$F" ]]; then
-              SIZE=$(wc -c < "$F")
-              if [ "$((CURRENT_SIZE + SIZE))" -gt "$MAX_TOTAL" ]; then
-                echo "🚫 Limite total atingido ($MAX_TOTAL bytes)."
-                break
+          echo "🧠 Criando contexto condicional..."
+          FULL_FILE=".debug/full_context.txt"
+          echo "" > $FULL_FILE
+          if [ ! -f ".debug/last_commit.txt" ]; then
+            echo "📦 Primeira execução: contexto completo"
+            for F in $(git ls-files); do
+              if [[ -f "$F" ]]; then
+                echo "==== $F ====" >> $FULL_FILE
+                head -c 15000 "$F" >> $FULL_FILE
+                echo "\n" >> $FULL_FILE
               fi
-              echo "==== $F ====" >> full_context.txt
-              head -c "$MAX_SIZE" "$F" >> full_context.txt
-              echo "\n" >> full_context.txt
-              CURRENT_SIZE=$((CURRENT_SIZE + SIZE))
-            fi
-          done
-          echo "📦 Contexto final: $(wc -c < full_context.txt) bytes"
-
+            done
+          else
+            echo "📦 Execução incremental: apenas arquivos modificados"
+            LAST_COMMIT=$(cat .debug/last_commit.txt)
+            for F in $(git diff --name-only $LAST_COMMIT HEAD); do
+              if [[ -f "$F" ]]; then
+                echo "==== $F ====" >> $FULL_FILE
+                head -c 15000 "$F" >> $FULL_FILE
+                echo "\n" >> $FULL_FILE
+              fi
+            done
+          fi
+          git rev-parse HEAD > .debug/last_commit.txt
+          echo "📦 Contexto final: $(wc -c < $FULL_FILE) bytes"
       - name: 🧾 Generate AI Response (GPT-5-mini)
         id: ai
         run: |
           set -e
           COMMIT_MSG="$(git log -1 --pretty=%B | grep '^prompt:' | sed 's/^prompt: //')"
-          echo "📝 Prompt detectado:"
-          echo "$COMMIT_MSG"
           if [ -z "$COMMIT_MSG" ]; then
-            echo "⚠️ Nenhum prompt encontrado no commit message. Abortando."
+            echo "⚠️ Nenhum prompt encontrado no commit. Abortando."
             exit 0
           fi
-
           REQUEST=$(jq -n \
             --arg model "gpt-5-mini-2025-08-07" \
             --arg prompt "$COMMIT_MSG" \
-            --arg context "$(head -c 180000 full_context.txt)" \
+            --arg context "$(head -c 180000 $FULL_FILE)" \
             '{model: $model,
               messages: [
-                {"role":"system","content":"Você é um assistente que gera arquivos a partir de prompts de commit."},
+                {"role":"system","content":"Você é um assistente de programação Cicada que gera alterações em arquivos do repositório com base em prompts de commit. Cicada é uma bet casa de apostas."},
                 {"role":"user","content":($prompt + "\n\nContexto:\n" + $context)}
               ],
               max_completion_tokens: 3000
             }')
-
           echo "$REQUEST" > .debug/request.json
-
           RESPONSE=$(curl -s -X POST "https://api.openai.com/v1/chat/completions" \
             -H "Authorization: Bearer $OPENAI_API_KEY" \
             -H "Content-Type: application/json" \
             -d "$REQUEST")
-
           echo "$RESPONSE" > .debug/response_raw.txt
-
           jq -r '.choices[0].message.content' <<< "$RESPONSE" > ai_raw.txt
           echo "✅ Resposta bruta salva em ai_raw.txt"
-
       - name: 💾 Convert AI output to safe JSON
         run: |
           set -e
-          python3 - <<END
-import json
-with open("ai_raw.txt", "r", encoding="utf-8") as f:
-    content = f.read()
-output = [{"path": "README.md", "content": content}]
-with open("ai_output.json", "w", encoding="utf-8") as f:
-    json.dump(output, f, ensure_ascii=False)
-END
-          echo "✅ JSON seguro gerado em ai_output.json"
-          head -n 20 ai_output.json
-
-      - name: 💾 Apply changes and commit
+          # Escapa quebras de linha e aspas para JSON válido
+          AI_CONTENT=$(jq -Rs '.' ai_raw.txt)
+          echo "$AI_CONTENT" > ai_safe.txt
+          echo "✅ Conteúdo seguro gerado"
+      - name: 💾 Apply AI changes
         run: |
           set -e
-          if grep -q '"path"' ai_output.json; then
+          # Espera JSON no formato: [{"path":"arquivo","content":"conteudo"}]
+          AI_SAFE=$(cat ai_safe.txt)
+          if echo "$AI_SAFE" | grep -q 'path'; then
             echo "🧩 Aplicando alterações..."
-            jq -c '.[]' ai_output.json | while read i; do
+            # Itera sobre objetos JSON
+            echo "$AI_SAFE" | jq -c '.[]' | while read i; do
               FILE=$(echo "$i" | jq -r '.path')
               CONTENT=$(echo "$i" | jq -r '.content')
               mkdir -p "$(dirname "$FILE")"
               echo "$CONTENT" > "$FILE"
-              echo "✅ Arquivo atualizado: $FILE"
+              echo "✅ Atualizado $FILE"
             done
             git config user.name "prompt-bot"
             git config user.email "actions@github.com"
@@ -118,3 +110,4 @@ END
             fi
           else
             echo "⚠️ Nenhum JSON válido detectado. Resposta GPT ignorada."
+          fi
