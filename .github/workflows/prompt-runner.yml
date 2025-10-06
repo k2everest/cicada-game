@@ -1,6 +1,5 @@
 name: 🤖 Prompt Runner GPT-5-mini
 
-
 on:
   push:
     branches:
@@ -55,13 +54,14 @@ jobs:
             echo "⚠️ Nenhum prompt encontrado no commit message. Abortando."
             exit 0
           fi
+          # Enviar para GPT-5-mini
           REQUEST=$(jq -n \
             --arg model "gpt-5-mini-2025-08-07" \
             --arg prompt "$COMMIT_MSG" \
             --arg context "$(head -c 180000 full_context.txt)" \
             '{model: $model,
               messages: [
-                {"role":"system","content":"Você é um assistente de programação Cicada, gera arquivos a partir de prompts de commit e formata texto em JSON seguro."},
+                {"role":"system","content":"Você é um assistente que gera arquivos a partir de prompts de commit. Sempre responda em JSON válido."},
                 {"role":"user","content":($prompt + "\n\nContexto:\n" + $context)}
               ],
               max_completion_tokens: 3000
@@ -78,7 +78,8 @@ jobs:
       - name: 💾 Convert AI output to safe JSON
         run: |
           set -e
-          jq -Rn --arg content "$(cat ai_raw.txt)" '[{path:"README.md", content:$content}]' > ai_output.json
+          AI_RAW=$(cat ai_raw.txt)
+          jq -Rn --arg content "$AI_RAW" '[{path:"README.md", content:$content}]' > ai_output.json
           echo "✅ JSON seguro gerado em ai_output.json"
           head -n 20 ai_output.json
 
